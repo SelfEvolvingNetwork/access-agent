@@ -314,6 +314,146 @@ def run_all() -> None:
     ch("دادهٔ ناقص → RuntimeError", raised)
     cfg_path.write_text(cfg_backup, encoding="utf-8")
 
+    # ---------- v0.2: GitHub App — توکن نصب واقعی با انقضای گیت‌هاب ----------
+    import base64 as b64
+    from access_agent import githubapp, server as aa_server
+
+    keyp = Path(TMP) / "app-key.pem"
+    r = subprocess.run(["openssl", "genpkey", "-algorithm", "RSA",
+                        "-pkeyopt", "rsa_keygen_bits:2048", "-out", str(keyp)],
+                       capture_output=True)
+    ch("کلید RSA آزمون ساخته شد", r.returncode == 0 and keyp.exists())
+    pem_text = keyp.read_text()
+
+    # --- JWT: ساختار + امضای واقعی openssl ---
+    jwt = githubapp.mint_jwt("12345", pem_text, now=1700000000)
+    h, p, s = jwt.split(".")
+    header = json.loads(b64.urlsafe_b64decode(h + "=" * (-len(h) % 4)))
+    payload = json.loads(b64.urlsafe_b64decode(p + "=" * (-len(p) % 4)))
+    ch("JWT هدر RS256/typ", header.get("alg") == "RS256" and header.get("typ") == "JWT")
+    ch("JWT بار iss/iat/exp", payload.get("iss") == 12345
+       and payload.get("iat") == 1699999940 and payload.get("exp") == 1700000540)
+    pub = Path(TMP) / "app-pub.pem"
+    subprocess.run(["openssl", "pkey", "-in", str(keyp), "-pubout", "-out", str(pub)],
+                   capture_output=True)
+    sig_input = f"{h}.{p}".encode()
+    sigf = Path(TMP) / "sig.bin"
+    sigf.write_bytes(b64.urlsafe_b64decode(s + "=" * (-len(s) % 4)))
+    r = subprocess.run(["openssl", "dgst", "-sha256", "-verify", str(pub),
+                        "-signature", str(sigf)], input=sig_input, capture_output=True)
+    ch("JWT امضا با openssl راستی‌آزمایی می‌شود",
+       r.returncode == 0 and b"Verified OK" in r.stdout)
+
+    # --- config: اعتبارسنجی و مجوزها ---
+    try:
+        githubapp.save_config("not-numeric", str(keyp)); bad = False
+    except githubapp.GitHubAppError:
+        bad = True
+    ch("app_id غیرعددی رد می‌شود", bad)
+    try:
+        githubapp.save_config("12345", str(Path(TMP) / "missing.pem")); bad = False
+    except githubapp.GitHubAppError:
+        bad = True
+    ch("pem ناموجود رد می‌شود", bad)
+    junk = Path(TMP) / "junk.pem"; junk.write_text("hello world", encoding="utf-8")
+    try:
+        githubapp.save_config("12345", str(junk)); bad = False
+    except githubapp.GitHubAppError:
+        bad = True
+    ch("فایل غیر-کلید رد می‌شود", bad)
+    cfg = githubapp.save_config("12345", str(keyp))
+    ch("config ذخیره شد و اپ «پیکربندی‌شده» است",
+       cfg.get("app_id") == "12345" and githubapp.configured())
+    ch("pem و config روی دیسک 600 هستند",
+       oct(githubapp.pem_path().stat().st_mode & 0o777) == "0o600"
+       and oct(githubapp.app_config_path().stat().st_mode & 0o777) == "0o600")
+
+    # --- disclose با API جعلی: کشف installation، مینت، کش ---
+    CALLS: list[tuple[str, str]] = []
+
+    def fake_api(method, path, bearer, body=None, timeout=20):
+        CALLS.append((method, path))
+        if method == "GET" and path == "/app/installations":
+            return 200, [{"id": 4242, "app_slug": "parastoo-agent"}]
+        if method == "POST" and path == "/app/installations/4242/access_tokens":
+            # fake installation token - built at runtime so no literal secret in source
+            fake_tok = "gh" + "s_" + "smoke" * 6
+            return 201, {"token": fake_tok,
+                         "expires_at": "2030-01-01T00:00:00Z",
+                         "permissions": {"contents": "write", "metadata": "read"},
+                         "repository_selection": "selected"}
+        raise AssertionError(f"unexpected api call {method} {path}")
+
+    real_api = githubapp._api
+    githubapp._api = fake_api
+    try:
+        res = githubapp.disclose("smoke: install the v0.2 flow")
+        ch("disclose توکن نصب با mode github-app می‌دهد",
+           res.get("ok") is True and res.get("mode") == "github-app"
+           and res.get("token", "").startswith("ghs_")
+           and res.get("expires_at") == "2030-01-01T00:00:00Z")
+        ch("installation_id خودکار کشف و ماندگار شد",
+           githubapp.load_config().get("installation_id") == "4242"
+           and ("GET", "/app/installations") in CALLS
+           and ("POST", "/app/installations/4242/access_tokens") in CALLS)
+        n_calls = len(CALLS)
+        res2 = githubapp.disclose("smoke: reuse the cached token")
+        ch("توکن زندهٔ کش‌شده دوباره استفاده می‌شود (بدون تماس تازه)",
+           len(CALLS) == n_calls and res2.get("token") == res.get("token")
+           and res2.get("grant", {}).get("cached") is True)
+        githubapp.mint_token(force=True)
+        ch("force مینت تازه می‌زند (installation ذخیره‌شده فقط POST می‌خواهد)",
+           len(CALLS) == n_calls + 1)
+        ch("grant در sessions.jsonl با mode ثبت شد",
+           "github-app" in (Path(TMP) / "sessions.jsonl").read_text())
+        short = githubapp.disclose("koochak")
+        ch("purpose کوتاه → 400", short.get("status") == 400
+           and short.get("error") == "purpose_required")
+        # --- انتخاب حالت روی سرور درون-فرآیندی ---
+        gs = aa_server.ThreadingHTTPServer(("127.0.0.1", 0), aa_server.Handler)
+        gt = threading.Thread(target=gs.serve_forever, daemon=True)
+        gt.start()
+        try:
+            PORT2 = gs.socket.getsockname()[1]
+
+            def req2(method, path, token, body=None):
+                data = json.dumps(body).encode() if body is not None else None
+                rq = urllib.request.Request(f"http://127.0.0.1:{PORT2}{path}",
+                                            data=data, method=method)
+                rq.add_header("Authorization", f"Bearer {token}")
+                with urllib.request.urlopen(rq, timeout=10) as resp:
+                    return resp.status, json.loads(resp.read())
+
+            code, b = req2("POST", "/api/github/token", ADMIN,
+                           {"purpose": "smoke: app mode via server"})
+            ch("سرور در حالت اپ توکن نصب می‌دهد (پات نه)",
+               code == 200 and b.get("mode") == "github-app"
+               and b.get("token", "").startswith("ghs_"))
+            githubapp.clear_config()
+            code, b = req2("POST", "/api/github/token", ADMIN,
+                           {"purpose": "smoke: pat fallback mode"})
+            ch("بدون اپ: فالبک به حالت پات (قرارداد v0.1 دست‌نخورده)",
+               code == 200 and b.get("ok") is True and b.get("mode", "pat") != "github-app"
+               and "token" in b)
+        finally:
+            gs.shutdown(); gs.server_close()
+    finally:
+        githubapp._api = real_api
+        githubapp.clear_config()
+
+    # --- v0.2 در فایل‌های نصب و CLI ---
+    inst_txt = (REPO / "install.sh").read_text()
+    ch("خروجی نصب دیگر ADMIN_TOKEN خام چاپ نمی‌کند (فقط اشاره‌گر show-admin-token)",
+       'ADMIN_TOKEN:     $ADMIN_TOKEN' not in inst_txt
+       and "sudo access-agent show-admin-token" in inst_txt)
+    cli_txt = (REPO / "deploy" / "access-agent-cli.sh").read_text()
+    ch("CLI مالک فرمان‌های اپ را دارد",
+       all(c in cli_txt for c in ("set-github-app)", "test-github-app)",
+                                  "show-github-app)", "clear-github-app)")))
+    guide = (REPO / "docs" / "GITHUB_APP_GUIDE.fa.md").read_text()
+    ch("راهنمای GitHub App موجود است و مسیر SSH کلید را الزام می‌کند",
+       "Developer settings" in guide and "scp" in guide)
+
 
 def teardown() -> None:
     try:

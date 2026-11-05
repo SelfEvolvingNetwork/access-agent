@@ -13,6 +13,10 @@
 #    show-admin-token        print the admin token (owner-only)
 #    rotate-admin-token      new admin token, printed once; old one dies
 #    set-github-token <tok>  store/replace the owner's GitHub PAT (best-effort validation)
+#    set-github-app <id> <pem>  configure a GitHub App (v0.2): REAL <=1h installation tokens
+#    test-github-app         mint a fresh installation token; print metadata only (never the token)
+#    show-github-app         app config summary (no secrets)
+#    clear-github-app        remove app config; broker falls back to PAT mode
 #    handoff                 ready-to-paste handoff block for your AI agent (v0.1.3)
 #    audit [N]               tail of the audit log (default 30)
 # =============================================================
@@ -22,6 +26,7 @@ ETC="${ACCESS_AGENT_ETC:-/etc/access-agent}"
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 die() { echo -e "${RED} error:${NC} $*" >&2; exit 1; }
 ok()  { echo -e "${GREEN} [ok]${NC} $*"; }
+warn() { echo -e "${YELLOW} [warn]${NC} $*"; }
 
 [ "$(id -u)" -eq 0 ] || die "run as root:  sudo access-agent <command>"
 [ -d "$ETC" ] || die "no $ETC — install first: bootstrap.sh"
@@ -56,6 +61,22 @@ os.chmod(p, 0o600)
 PY
 }
 
+OPT_DIR="${ACCESS_AGENT_OPT:-/opt/access-agent}"
+py_with_agent() { ACCESS_AGENT_HOME="$ETC" python3 - "$OPT_DIR" "$@" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from access_agent import githubapp
+fn = getattr(githubapp, sys.argv[2])
+import json
+args = sys.argv[3:]
+try:
+    out = fn(*args)
+except Exception as e:
+    print(f"error: {e}", file=sys.stderr); raise SystemExit(1)
+print(out if isinstance(out, str) else json.dumps(out, ensure_ascii=False, indent=2))
+PY
+}
+
 case "$CMD" in
   status)
     echo "service : $(systemctl is-active access-agent 2>/dev/null || echo unknown) ($(systemctl is-enabled access-agent 2>/dev/null || echo disabled))"
@@ -65,6 +86,7 @@ case "$CMD" in
     echo "healthz : ${H:-unreachable}"
     echo "agent   : $(python3 -c "import json;print('enabled' if json.load(open('$ETC/tokens.json')).get('agent_sha') else 'disabled')" 2>/dev/null || echo '?')"
     echo "github  : $([ -s "$ETC/github.env" ] && echo stored || echo not-stored)"
+    echo "gh-app  : $([ -s "$ETC/github-app.json" ] && echo "configured (app_id $(python3 -c "import json;print(json.load(open('$ETC/github-app.json')).get('app_id','?'))" 2>/dev/null || echo '?'))" || echo not-configured)"
     ;;
   url) url ;;
   show-agent-token)
@@ -109,6 +131,24 @@ try:
 except Exception:
     print('could NOT validate (saved anyway — check network/scope)')" || echo "could NOT validate (saved anyway)")"
     ok "GitHub token stored ($V)."
+    ;;
+  set-github-app)
+    APP_ID="${2:-}"; PEM="${3:-}"
+    [ -n "$APP_ID" ] && [ -n "$PEM" ] || die "usage: access-agent set-github-app <app_id> <pem_path>  (PEM must arrive via SSH/scp, never through the AI channel)"
+    py_with_agent save_config "$APP_ID" "$PEM" && ok "GitHub App configured."
+    echo "  -> minting a test token (best-effort; needs api.github.com reachability)..."
+    py_with_agent test_github_app >/dev/null 2>&1 \
+      && ok "validated: a real installation token was minted." \
+      || warn "saved but NOT validated now (network?) — run later:  sudo access-agent test-github-app"
+    ;;
+  test-github-app)
+    py_with_agent test_github_app || die "mint failed — see the error above"
+    ;;
+  show-github-app)
+    py_with_agent status
+    ;;
+  clear-github-app)
+    py_with_agent clear_config && ok "GitHub App config removed — broker is back in PAT mode."
     ;;
   handoff)
     OPT_DIR="${ACCESS_AGENT_OPT:-/opt/access-agent}"

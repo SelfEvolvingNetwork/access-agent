@@ -67,7 +67,7 @@ sudo access-agent handoff
 | دو قلمرو توکن | `admin` (ادمین سرور) و `agent` (عامل هوش مصنوعی)؛ ادمین superset است |
 | ذخیرهٔ توکن | فقط هش SHA-256 در `tokens.json` (chmod 600)؛ مقایسهٔ constant-time |
 | انتقال | فقط HTTPS با گواهی خودامضا؛ عامل اثر انگشت گواهی را پین می‌کند |
-| توکن گیت‌هاب | پات مالک فقط در `/etc/access-agent/github.env` (chmod 600، خارج از هر git)؛ عامل با هدف ثبت‌شده آن را می‌گیرد (افشای نشست‌محور + رکورد grant) |
+| توکن گیت‌هاب | **حالت GitHub App (v0.2 — پیشنهادشده):** پل با کلید خصوصی اپ، توکن نصب واقعی ≤۱ساعته می‌سازد که خودش می‌میرد و فقط به مخزن‌های نصب‌شده می‌رسد؛ پات مالک هرگز سرو نمی‌شود. **حالت فالبک (بدون اپ):** پات مالک فقط در `/etc/access-agent/github.env` (chmod 600، خارج از هر git)؛ عامل با هدف ثبت‌شده آن را می‌گیرد (افشای نشست‌محور + رکورد grant). راهنما: `docs/GITHUB_APP_GUIDE.fa.md` |
 | audit | هر فراخوانی در `audit/audit.jsonl` (append-only) — خط قرمز: عامل حق ویرایش ندارد |
 | سقف‌های exec | cmd ≤ ۸۰۰۰ کاراکتر، timeout ≤ ۶۰۰ث، خروجی ≤ ۲۰۰هزار کاراکتر/جریان، هم‌زمانی ≤ ۲ (بیشتر → 429) |
 | stdin | همیشه `/dev/null` (درس `curl \| bash` پرستو) |
@@ -82,7 +82,7 @@ sudo access-agent handoff
 | `GET /` | عمومی | اطلاعات سرویس |
 | `GET /api/status` | agent \| admin | وضعیت هاست (آپ‌تایم، دیسک، رم، داکر، مسیر نصب پرستو، وضعیت توکن‌ها) |
 | `POST /api/exec` | agent \| admin | اجرای دستور روی هاست (معادل SSH) |
-| `POST /api/github/token` | agent \| admin | گرفتن پات با هدف ثبت‌شده (افشای نشست‌محور) |
+| `POST /api/github/token` | agent \| admin | توکن گیت‌هاب با هدف ثبت‌شده — v0.2: توکن نصب واقعی ≤۱ساعته (GitHub App)؛ فالبک: افشای نشست‌محور پات |
 | `GET /api/admin/audit` | admin | دم audit |
 | `GET /api/admin/sessions` | admin | فهرست grantهای توکن گیت‌هاب |
 | `POST /api/admin/rotate-agent-token` | admin | توکن عامل جدید (قدیمی می‌میرد) |

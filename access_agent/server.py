@@ -1,11 +1,15 @@
 """HTTPS bridge server — access_agent.server (pure Python stdlib).
 
-Endpoints (v0.1):
+Endpoints (v0.2):
   GET  /                          public service info
   GET  /healthz                   public lightweight health
   GET  /api/status                agent|admin  host status snapshot
   POST /api/exec                  agent|admin  run a command on the host
-  POST /api/github/token          agent|admin  session-scoped PAT disclosure
+  POST /api/github/token          agent|admin  purpose-gated token disclosure:
+                                               GitHub App mode (v0.2): REAL
+                                               <=1h installation tokens; master
+                                               PAT never served. PAT mode (v0.1
+                                               fallback while no app is set).
   GET  /api/admin/audit           admin        audit tail (?tail=N)
   GET  /api/admin/sessions        admin        github grant tail (?tail=N)
   POST /api/admin/rotate-agent-token  admin   new agent token (printed once)
@@ -29,6 +33,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import VERSION
+from . import githubapp
 from .execbridge import run_exec
 from .githubbroker import disclose, grants_tail, save_token, stored_token
 from .security import audit, audit_tail, check_token, home, load_tokens, save_tokens, sha256_hex
@@ -274,7 +279,13 @@ class Handler(BaseHTTPRequestHandler):
             role = self._guard("agent")
             if not role:
                 return
-            res = disclose(data.get("purpose"), data.get("ttl_min", 60), self._peer_ip())
+            # v0.2: GitHub App mode serves REAL <=1h installation tokens and
+            # never touches the master PAT; PAT mode stays only as the
+            # fallback while the owner has not configured an app yet.
+            if githubapp.configured():
+                res = githubapp.disclose(data.get("purpose"), self._peer_ip())
+            else:
+                res = disclose(data.get("purpose"), data.get("ttl_min", 60), self._peer_ip())
             if not res.get("ok"):
                 return self._send(res.get("status", 400), res)
             return self._send(200, res)
