@@ -246,7 +246,8 @@ REPORT="$ETC/install-report.txt"
   echo "COMMIT:          ${COMMIT:-unknown}"
   echo "SECRETS_DIR:     $ETC/secrets (chmod 600)"
   echo "AUDIT_LOG:       $ETC/audit/audit.jsonl (append-only)"
-  echo "OWNER CLI:       access-agent status | url | rotate-agent-token | revoke-agent-token | set-github-token <token>"
+  echo "OWNER CLI:       access-agent status | url | handoff | rotate-agent-token | revoke-agent-token | set-github-token <token>"
+  echo "HANDOFF:         sudo access-agent handoff   # ready-to-paste text for your AI agent"
   echo "SERVICE:         systemctl status $SERVICE --no-pager"
   echo "UNINSTALL:       curl -fsSL $ORG_REPO_URL/uninstall.sh | sudo bash"
   echo "============================================================"
@@ -256,6 +257,16 @@ chmod 600 "$REPORT"
 
 echo ""
 cat "$ETC/install-report.txt"
+
+# v0.1.3: the owner's single copy-paste step — hand the AI agent its mission.
+# Fresh install prints the block right here (tokens are already in hand);
+# upgrades point to the canonical reprint command.
+if [ "$FRESH" = "1" ] && [ -x "$CLI_BIN" ]; then
+  say "Handoff block — copy everything between the lines to your AI agent:"
+  "$CLI_BIN" handoff || warn "handoff block failed — reprint anytime:  sudo access-agent handoff"
+else
+  say "Reprint the AI-agent handoff block anytime:  sudo access-agent handoff"
+fi
 
 if [ "$FRESH" = "1" ]; then
   warn "This report is printed ONCE and saved to $ETC/install-report.txt (chmod 600)."

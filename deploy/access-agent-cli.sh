@@ -13,6 +13,7 @@
 #    show-admin-token        print the admin token (owner-only)
 #    rotate-admin-token      new admin token, printed once; old one dies
 #    set-github-token <tok>  store/replace the owner's GitHub PAT (best-effort validation)
+#    handoff                 ready-to-paste handoff block for your AI agent (v0.1.3)
 #    audit [N]               tail of the audit log (default 30)
 # =============================================================
 set -euo pipefail
@@ -108,6 +109,18 @@ try:
 except Exception:
     print('could NOT validate (saved anyway — check network/scope)')" || echo "could NOT validate (saved anyway)")"
     ok "GitHub token stored ($V)."
+    ;;
+  handoff)
+    OPT_DIR="${ACCESS_AGENT_OPT:-/opt/access-agent}"
+    if [ ! -f "$OPT_DIR/access_agent/handoff.py" ]; then
+      die "handoff module missing — upgrade first: re-run bootstrap.sh"
+    fi
+    ACCESS_AGENT_HOME="$ETC" python3 - "$OPT_DIR" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from access_agent.handoff import build_block
+print(build_block())
+PY
     ;;
   audit)
     N="${2:-30}"

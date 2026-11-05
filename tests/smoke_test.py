@@ -281,6 +281,39 @@ def run_all() -> None:
     sess = Path(TMP) / "sessions.jsonl"
     ch("sessions.jsonl ثبت شده", sess.exists() and len(sess.read_text().splitlines()) >= 2)
 
+    # ---------- handoff block (v0.1.3) ----------
+    sys.path.insert(0, str(REPO))
+    from access_agent import handoff
+    (Path(TMP) / "config.json").write_text(json.dumps(
+        {"ip": "203.0.113.9", "port": PORT, "version": "0.1.3"}), encoding="utf-8")
+    (Path(TMP) / "secrets").mkdir(exist_ok=True)
+    (Path(TMP) / "secrets" / "agent-token").write_text(AGENT + "\n", encoding="utf-8")
+    tls = Path(TMP) / "tls"
+    tls.mkdir(exist_ok=True)
+    r = subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                        "-days", "3", "-subj", "/CN=smoke",
+                        "-keyout", str(tls / "key.pem"), "-out", str(tls / "cert.pem")],
+                       capture_output=True)
+    ch("گواهی آزمون handoff ساخته شد", r.returncode == 0 and (tls / "cert.pem").exists())
+    block = handoff.build_block()
+    ch("بلوک handoff با دو خط جداکننده", "HANDOFF BLOCK" in block and "END HANDOFF BLOCK" in block)
+    ch("ACCESS_URL از config می‌آید", f"ACCESS_URL:  https://203.0.113.9:{PORT}" in block)
+    ch("توکن عامل در بلوک، توکن ادمین نیست", AGENT in block and ADMIN not in block)
+    fp = handoff.cert_fingerprint()
+    ch("اثرانگشت ۶۴hex در بلوک", len(fp) == 64 and fp.lower() in block.lower())
+    ch("هر دو URL مرجع در بلوک", handoff.PROTOCOL_URL in block
+       and handoff.PARASTOO_LOOP_URL in block)
+    cfg_path = Path(TMP) / "config.json"
+    cfg_backup = cfg_path.read_text(encoding="utf-8")
+    cfg_path.unlink()
+    try:
+        handoff.build_block()
+        raised = False
+    except RuntimeError:
+        raised = True
+    ch("دادهٔ ناقص → RuntimeError", raised)
+    cfg_path.write_text(cfg_backup, encoding="utf-8")
+
 
 def teardown() -> None:
     try:

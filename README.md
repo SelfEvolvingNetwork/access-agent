@@ -52,6 +52,14 @@ curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/SelfEvolvingNe
 
 مالک این سه مقدار (به‌جز ADMIN_TOKEN) را در چت به عامل هوش مصنوعی می‌دهد و از این پس عامل ابتکار عمل را در دست می‌گیرد: اتصال، تست، نصب/تعمیر پرستو، همه‌چیز.
 
+**متن تحویل آماده (v0.1.3):** لازم نیست سه مقدار را دستی بازنویسی کنی — نصب‌کننده در پایان، بلوک آمادهٔ کپی‌پیست چاپ می‌کند و هر وقت خواستی:
+
+```bash
+sudo access-agent handoff
+```
+
+همین بلوک را می‌دهد: سه مقدار + لینک قرارداد + مأموریت یک‌خطی. آن را عیناً در چت عامل هوش مصنوعی بچسبان.
+
 ## مدل امنیتی
 
 | لایه | تصمیم |
@@ -92,6 +100,7 @@ sudo access-agent revoke-agent-token     # قطع دسترسی عامل
 sudo access-agent show-admin-token       # توکن ادمین (فقط خودتان) — v0.1.1
 sudo access-agent rotate-admin-token     # توکن ادمین جدید؛ قدیمی می‌میرد — v0.1.1
 sudo access-agent set-github-token ghp_xxx   # تعویض پات (اعتبارسنجی best-effort)
+sudo access-agent handoff                 # متن آمادهٔ تحویل به عامل هوش مصنوعی — v0.1.3
 sudo access-agent audit 30               # دم لاگ audit
 ```
 
@@ -105,7 +114,7 @@ curl -fsSL https://raw.githubusercontent.com/SelfEvolvingNetwork/access-agent/ma
 
 ## نقشهٔ راه
 
-- **v0.1 (این نسخه):** پل مستقل + افشای نشست‌محور پات + CLI مالک
+- **v0.1.3 (این نسخه):** متن تحویل (handoff) — بلوک آمادهٔ کپی‌پیست برای عامل هوش مصنوعی، در خروجی نصب و فرمان `access-agent handoff`
 - **v0.2:** توکن موقت واقعی گیت‌هاب با GitHub App (توکن نصبی ۱ساعتهٔ فقط-مخزن) — مالک یک‌بار App می‌سازد؛ مسیر افشا به‌عنوان فال‌بک می‌ماند
 - **v0.3:** کانال آپدیت پایدار (تگ) + آپدیتر خودکار access-agent جدا از پوش‌های main
 - هر زمان: تعویض گواهی خودامضا با ACME اگر دامنه به این سرویس وصل شد
