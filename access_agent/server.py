@@ -340,6 +340,13 @@ def main() -> int:
         port = int(os.environ.get("ACCESS_AGENT_PORT", "0") or 0)
     except ValueError:
         port = 0
+    if port <= 0:
+        # v0.1.2: honor the installer's chosen port (config.json) when the env
+        # is absent — the systemd unit is exactly this case; 0 = OS random.
+        try:
+            port = int(json.loads((home() / "config.json").read_text(encoding="utf-8")).get("port") or 0)
+        except Exception:
+            port = 0
     no_tls = os.environ.get("ACCESS_AGENT_NO_TLS", "") == "1"
 
     httpd = ThreadingHTTPServer((bind, port), Handler)

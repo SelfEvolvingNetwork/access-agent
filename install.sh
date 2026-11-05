@@ -14,6 +14,19 @@ UNIT_DIR="${ACCESS_AGENT_UNIT_DIR:-/etc/systemd/system}"
 CLI_BIN="${ACCESS_AGENT_CLI_BIN:-/usr/local/bin/access-agent}"
 SERVICE=access-agent
 
+# v0.1.2: run a command in the HOST network namespace when possible. Under a
+# privileged chroot container (AI-agent exec bridge) the container netns differs
+# from the host — the UDP probe and 127.0.0.1 self-check would report/see the
+# container's network, not the host's. On a normal host (root) nsenter -t 1 -n
+# is identity; as non-root (sandbox e2e) it fails and we fall back to direct.
+hostns() {
+  if command -v nsenter >/dev/null 2>&1 && nsenter -t 1 -n true 2>/dev/null; then
+    nsenter -t 1 -n "$@"
+  else
+    "$@"
+  fi
+}
+
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 say()  { echo -e "${BLUE}==>${NC} $*"; }
 ok()   { echo -e "${GREEN} [ok]${NC} $*"; }
@@ -35,7 +48,12 @@ PY
 )"
 
 detect_ip() {
-  "$PYBIN" - <<'PY'
+  # v0.1.2: prefer the host netns (first IPv4 of hostname -I); UDP probe fallback.
+  IP="$(hostns hostname -I 2>/dev/null | awk '{print $1}')"
+  if [ -n "$IP" ]; then
+    echo "$IP"
+  else
+    "$PYBIN" - <<'PY'
 import socket
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 try:
@@ -46,6 +64,7 @@ except Exception:
 finally:
     s.close()
 PY
+  fi
 }
 pick_free_port() {
   "$PYBIN" - <<'PY'
@@ -165,6 +184,7 @@ Type=simple
 WorkingDirectory=$OPT
 ExecStart=$PYBIN -m access_agent.server
 Environment=ACCESS_AGENT_HOME=$ETC
+Environment=ACCESS_AGENT_PORT=$PORT
 User=root
 Restart=always
 RestartSec=3
@@ -191,7 +211,7 @@ fi
 say "Self-check: https://127.0.0.1:${PORT}/healthz ..."
 HEALTH=""
 for i in $(seq 1 20); do
-  HEALTH="$(curl -sk --max-time 3 "https://127.0.0.1:${PORT}/healthz" 2>/dev/null || true)"
+  HEALTH="$(hostns curl -sk --max-time 3 "https://127.0.0.1:${PORT}/healthz" 2>/dev/null || true)"
   echo "$HEALTH" | grep -q '"ok": *true\|"ok":true' && break
   sleep 1
 done
