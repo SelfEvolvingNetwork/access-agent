@@ -89,6 +89,8 @@ sudo access-agent url                    # فقط ACCESS_URL
 sudo access-agent show-agent-token       # توکن عامل (برای دادن به عامل)
 sudo access-agent rotate-agent-token     # توکن جدید؛ قدیمی می‌میرد
 sudo access-agent revoke-agent-token     # قطع دسترسی عامل
+sudo access-agent show-admin-token       # توکن ادمین (فقط خودتان) — v0.1.1
+sudo access-agent rotate-admin-token     # توکن ادمین جدید؛ قدیمی می‌میرد — v0.1.1
 sudo access-agent set-github-token ghp_xxx   # تعویض پات (اعتبارسنجی best-effort)
 sudo access-agent audit 30               # دم لاگ audit
 ```

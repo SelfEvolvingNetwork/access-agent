@@ -10,6 +10,8 @@
 #    show-agent-token        print the agent token (to hand to the AI agent)
 #    rotate-agent-token      new agent token, printed once; old one dies
 #    revoke-agent-token      disable the agent realm until next rotation
+#    show-admin-token        print the admin token (owner-only)
+#    rotate-admin-token      new admin token, printed once; old one dies
 #    set-github-token <tok>  store/replace the owner's GitHub PAT (best-effort validation)
 #    audit [N]               tail of the audit log (default 30)
 # =============================================================
@@ -36,6 +38,18 @@ etc, val = sys.argv[1], sys.argv[2]
 p = os.path.join(etc, "tokens.json")
 d = json.load(open(p, encoding="utf-8"))
 d["agent_sha"] = val
+json.dump(d, open(p, "w", encoding="utf-8"), indent=2)
+os.chmod(p, 0o600)
+PY
+}
+
+set_admin_hash() { # $1 = sha256 hex (v0.1.1)
+  python3 - "$ETC" "$1" <<'PY'
+import json, os, sys
+etc, val = sys.argv[1], sys.argv[2]
+p = os.path.join(etc, "tokens.json")
+d = json.load(open(p, encoding="utf-8"))
+d["admin_sha"] = val
 json.dump(d, open(p, "w", encoding="utf-8"), indent=2)
 os.chmod(p, 0o600)
 PY
@@ -68,6 +82,19 @@ case "$CMD" in
   revoke-agent-token)
     set_agent_hash ""
     ok "agent realm disabled until the next rotation."
+    ;;
+  show-admin-token)
+    [ -f "$ETC/secrets/admin-token" ] || die "$ETC/secrets/admin-token missing"
+    cat "$ETC/secrets/admin-token"
+    ;;
+  rotate-admin-token)
+    NEW="adm_$(openssl rand -hex 24)"
+    set_admin_hash "$(python3 -c "import hashlib,sys;print(hashlib.sha256(sys.argv[1].encode()).hexdigest())" "$NEW")"
+    mkdir -p "$ETC/secrets"
+    printf '%s\n' "$NEW" > "$ETC/secrets/admin-token"
+    chmod 600 "$ETC/secrets/admin-token"
+    ok "admin token rotated — view it anytime with:  sudo access-agent show-admin-token"
+    echo "$NEW"
     ;;
   set-github-token)
     TOK="${2:-}"
