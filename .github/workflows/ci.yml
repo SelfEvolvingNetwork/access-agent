@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: سینتکس پایتون
+        run: python -m compileall access_agent tests
+
+      - name: سینتکس اسکریپت‌های شل
+        run: |
+          bash -n bootstrap.sh
+          bash -n install.sh
+          bash -n uninstall.sh
+          bash -n deploy/access-agent-cli.sh
+
+      - name: تست دودی (سرور واقعی روی پورت آزاد، بدون TLS در تست)
+        run: python tests/smoke_test.py
