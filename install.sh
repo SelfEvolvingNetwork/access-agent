@@ -95,8 +95,13 @@ if [ "$FRESH" = "1" ]; then
   PORT="${ACCESS_AGENT_PORT:-$(pick_free_port)}"
   case "$PORT" in ''|*[!0-9]*) die "ACCESS_AGENT_PORT must be numeric";; esac
   IP="$(detect_ip)"
-  ADMIN_TOKEN="adm_$(openssl rand -hex 24)"
-  AGENT_TOKEN="aa_$(openssl rand -hex 24)"
+  # v0.2.1: a provisioning client (e.g. Parastoo Mobile) may generate the tokens
+  # on-device and pass them via env — such tokens are NEVER printed back.
+  ADMIN_TOKEN="${ACCESS_AGENT_ADMIN_TOKEN:-}"
+  AGENT_TOKEN="${ACCESS_AGENT_AGENT_TOKEN:-}"
+  TOKENS_SELF_GENERATED=1
+  if [ -z "$ADMIN_TOKEN" ]; then ADMIN_TOKEN="adm_$(openssl rand -hex 24)"; else TOKENS_SELF_GENERATED=0; fi
+  if [ -z "$AGENT_TOKEN" ]; then AGENT_TOKEN="aa_$(openssl rand -hex 24)"; else TOKENS_SELF_GENERATED=0; fi
   ADMIN_SHA="$("$PYBIN" -c "import hashlib,sys;print(hashlib.sha256(sys.argv[1].encode()).hexdigest())" "$ADMIN_TOKEN")"
   AGENT_SHA="$("$PYBIN" -c "import hashlib,sys;print(hashlib.sha256(sys.argv[1].encode()).hexdigest())" "$AGENT_TOKEN")"
 
@@ -155,6 +160,7 @@ cp -r "$SRC_DIR/access_agent" "$OPT/access_agent"
 rm -rf "$OPT/access_agent/__pycache__"
 find "$OPT/access_agent" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
 if [ -f "$SRC_DIR/deploy/access-agent-cli.sh" ]; then
+  mkdir -p "$(dirname "$CLI_BIN")"   # v0.2.1: destination dir may not exist yet
   cp "$SRC_DIR/deploy/access-agent-cli.sh" "$CLI_BIN"
   chmod 755 "$CLI_BIN"
 fi
@@ -173,6 +179,7 @@ chmod 600 "$ETC/config.json"
 
 # ---------- 3) systemd ----------
 say "Writing systemd unit ($SERVICE.service)..."
+mkdir -p "$UNIT_DIR"   # v0.2.1: override dirs (tests/containers) may not exist
 cat > "${UNIT_DIR}/${SERVICE}.service" <<UNIT
 [Unit]
 Description=Access Agent — independent AI-agent bridge (survives Parastoo crashes)
@@ -193,14 +200,23 @@ LimitNOFILE=8192
 [Install]
 WantedBy=multi-user.target
 UNIT
-systemctl daemon-reload
-systemctl enable "$SERVICE" >/dev/null 2>&1 || true
-if systemctl is-active --quiet "$SERVICE"; then
-  systemctl restart "$SERVICE"
+# v0.2.1: systemd guard — containers and exotic hosts may lack systemd.
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+  systemctl daemon-reload
+  systemctl enable "$SERVICE" >/dev/null 2>&1 || true
+  if systemctl is-active --quiet "$SERVICE"; then
+    systemctl restart "$SERVICE"
+  else
+    systemctl start "$SERVICE"
+  fi
+  ok "Service started (Restart=always, independent of Docker)."
 else
-  systemctl start "$SERVICE"
+  warn "systemd not available — starting via nohup (survives logout, not reboot)."
+  pkill -f "access_agent.server" 2>/dev/null || true
+  ( cd "$OPT" && ACCESS_AGENT_HOME="$ETC" ACCESS_AGENT_PORT="$PORT" \
+      nohup "$PYBIN" -m access_agent.server >>"$ETC/agent.nohup.log" 2>&1 & )
+  sleep 1
 fi
-ok "Service started (Restart=always, independent of Docker)."
 
 # best-effort firewall opening
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
@@ -235,10 +251,16 @@ REPORT="$ETC/install-report.txt"
   echo "ACCESS_URL:      $URL"
   echo "CERT_SHA256:     $CERT_SHA"
   if [ "$FRESH" = "1" ]; then
-    echo "AGENT_TOKEN:     $AGENT_TOKEN"
-    echo "ADMIN_TOKEN:     (stored on server — view it with:  sudo access-agent show-admin-token)"
-    echo "  -> give ACCESS_URL + CERT_SHA256 + AGENT_TOKEN to your AI agent."
-    echo "  -> ADMIN_TOKEN stays with you (never sent to the agent; never in the handoff block)."
+    if [ "$TOKENS_SELF_GENERATED" = "1" ]; then
+      echo "AGENT_TOKEN:     $AGENT_TOKEN"
+      echo "ADMIN_TOKEN:     (stored on server — view it with:  sudo access-agent show-admin-token)"
+      echo "  -> give ACCESS_URL + CERT_SHA256 + AGENT_TOKEN to your AI agent."
+      echo "  -> ADMIN_TOKEN stays with you (never sent to the agent; never in the handoff block)."
+    else
+      echo "AGENT_TOKEN:     (provided by provisioning client — not printed)"
+      echo "ADMIN_TOKEN:     (provided by provisioning client — not printed)"
+      echo "  -> the client already holds its token; nothing to hand over."
+    fi
     echo "  -> v0.2: real <=1h GitHub tokens via GitHub App — see:  sudo access-agent set-github-app"
   else
     echo "  -> upgrade: tokens/certs/PAT kept unchanged."
@@ -263,8 +285,14 @@ cat "$ETC/install-report.txt"
 # Fresh install prints the block right here (tokens are already in hand);
 # upgrades point to the canonical reprint command.
 if [ "$FRESH" = "1" ] && [ -x "$CLI_BIN" ]; then
-  say "Handoff block — copy everything between the lines to your AI agent:"
-  "$CLI_BIN" handoff || warn "handoff block failed — reprint anytime:  sudo access-agent handoff"
+  if [ "$TOKENS_SELF_GENERATED" = "1" ]; then
+    say "Handoff block — copy everything between the lines to your AI agent:"
+    ACCESS_AGENT_HOME="$ETC" "$CLI_BIN" handoff || warn "handoff block failed — reprint anytime:  sudo access-agent handoff"
+  else
+    # v0.2.1: client-provisioned tokens must never reappear on the terminal.
+    say "Tokens were provided by the provisioning client — handoff block skipped (it would print the agent token)."
+    say "Reprint the AI-agent handoff block anytime:  sudo access-agent handoff"
+  fi
 else
   say "Reprint the AI-agent handoff block anytime:  sudo access-agent handoff"
 fi
