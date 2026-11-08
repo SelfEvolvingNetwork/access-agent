@@ -1,6 +1,6 @@
 """HTTPS bridge server — access_agent.server (pure Python stdlib).
 
-Endpoints (v0.3):
+Endpoints (v0.5):
   GET  /                          public service info
   GET  /healthz                   public lightweight health
   GET  /api/status                agent|admin  host status snapshot
@@ -24,6 +24,16 @@ Endpoints (v0.3):
                                                optional {label} stored as meta)
   POST /api/admin/revoke-agent-token  admin   disable agent realm
   POST /api/admin/set-github-token    admin   store the owner's GitHub PAT
+  GET  /api/admin/parastoo/lifecycle-status  admin  parastoo install state + progress
+  POST /api/admin/parastoo/install     admin  official bootstrap install (v0.5,
+                                               owner directive: phone-only admin)
+  POST /api/admin/parastoo/uninstall   admin  FULL removal incl. /var/lib/parastoo
+                                               (requires {"confirm": "uninstall"})
+  POST /api/admin/parastoo/reinstall   admin  uninstall+install in one lock
+                                               (requires {"confirm": "reinstall"})
+  POST /api/admin/parastoo/update      admin  run auto-update.sh --force now
+                                               (v0.5: one operation at a time;
+                                               background thread + log file)
 
 Auth: Authorization: Bearer <token> — two realms (admin, agent); admin is a
 superset. Tokens stored as SHA-256 hashes in ACCESS_AGENT_HOME/tokens.json.
@@ -42,7 +52,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import VERSION
-from . import githubapp
+from . import githubapp, parastoolifecycle
 from .execbridge import run_exec
 from .githubbroker import disclose, grants_tail, save_token, stored_token
 from .handoff import build_block
@@ -61,10 +71,15 @@ POST_ONLY = {
     "/api/admin/revoke-agent-token",
     "/api/admin/agent-realm/pause",
     "/api/admin/set-github-token",
+    "/api/admin/parastoo/install",
+    "/api/admin/parastoo/uninstall",
+    "/api/admin/parastoo/reinstall",
+    "/api/admin/parastoo/update",
 }
 GET_ONLY = {"/", "/healthz", "/api/status", "/api/admin/audit",
             "/api/admin/audit/stream", "/api/admin/sessions",
-            "/api/admin/agent-token", "/api/admin/handoff"}
+            "/api/admin/agent-token", "/api/admin/handoff",
+            "/api/admin/parastoo/lifecycle-status"}
 
 
 # ---------- helpers ----------
@@ -284,6 +299,12 @@ class Handler(BaseHTTPRequestHandler):
                                         "detail": str(e)})
             audit(role, "admin_handoff_served", {}, self._peer_ip())
             return self._send(200, {"ok": True, "block": block})
+        if path == "/api/admin/parastoo/lifecycle-status":
+            role = self._guard("admin")
+            if not role:
+                return
+            audit(role, "admin_parastoo_status", {}, self._peer_ip())
+            return self._send(200, parastoolifecycle.status_snapshot())
         self._send(404, {"ok": False, "error": "not_found", "path": path})
 
     # ---- POST ----
@@ -396,6 +417,18 @@ class Handler(BaseHTTPRequestHandler):
             validation = validate_github_token(token)
             audit(role, "admin_set_github_token", validation, self._peer_ip())
             return self._send(200, {"ok": True, "stored": True, "validation": validation})
+
+        if path.startswith("/api/admin/parastoo/"):
+            role = self._guard("admin")
+            if not role:
+                return
+            action = path.rsplit("/", 1)[1]
+            res = parastoolifecycle.start(action, str(data.get("confirm") or ""))
+            if not res.get("ok"):
+                audit(role, "admin_parastoo_rejected",
+                      {"action": action, "error": res.get("error")}, self._peer_ip())
+                return self._send(res.get("status", 400), res)
+            return self._send(202, res)
 
         self._send(404, {"ok": False, "error": "not_found", "path": path})
 
