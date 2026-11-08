@@ -180,6 +180,18 @@ def run_all() -> None:
     ch("دومین عملیات حین اجرا = 409 busy", code == 409 and b.get("error") == "busy")
     code, b = req("GET", "/api/admin/parastoo/lifecycle-status", ADMIN)
     ch("حین اجرا: busy=true با نام عملیات", b.get("busy") is True and b.get("action") == "install")
+    # ---------- v0.5.1: mutual exec↔lifecycle guard («one transparent pipeline») ----------
+    code, b = req("POST", "/api/exec", AGENT,
+                  {"cmd": "bash /tmp/parastoo-bootstrap.sh", "timeout_s": 5})
+    ch("exec هم‌خوان با نصب حین lifecycle = 409 lifecycle_busy",
+       code == 409 and b.get("error") == "lifecycle_busy")
+    code, b = req("POST", "/api/exec", AGENT,
+                  {"cmd": "docker ps --format '{{.Names}}'", "timeout_s": 10})
+    ch("exec خواندنی (docker ps) حین lifecycle رد نمی‌شود (409 نه — اجرا می‌شود)",
+       code == 200 and b.get("error") is None)
+    code, b = req("POST", "/api/exec", AGENT,
+                  {"cmd": "echo supervision-continues-during-install", "timeout_s": 10})
+    ch("exec عادی حین lifecycle سالم", code == 200 and b.get("exit_code") == 0)
     GO.write_text("go\n")
     b = wait_done()
     ch("نصب تمام شد: exit 0", b.get("exit_code") == 0 and b.get("ok_last") is True)
@@ -188,6 +200,25 @@ def run_all() -> None:
     ch("لاگ نصب: خروجی bootstrap قلابی هست", "bootstrap-ok" in "\n".join(b.get("log_tail", [])))
     code, b = req("POST", "/api/admin/parastoo/install", ADMIN, {})
     ch("نصب دوم روی نصب‌شده = 409 already_installed", code == 409 and b.get("error") == "already_installed")
+
+    # ---------- lifecycle start حین execِ متضاد = 409 exec_busy ----------
+    import threading as _th
+    slow_res: list = []
+
+    def _slow_exec() -> None:
+        slow_res.append(req("POST", "/api/exec", AGENT,
+                            {"cmd": "sleep 2; echo bootstrap.sh", "timeout_s": 10}))
+    t = _th.Thread(target=_slow_exec)
+    t.start()
+    time.sleep(0.5)
+    code, b = req("POST", "/api/admin/parastoo/update", ADMIN, {})
+    ch("شروع lifecycle حین execِ متضاد = 409 exec_busy",
+       code == 409 and b.get("error") == "exec_busy")
+    t.join()
+    code, b = req("POST", "/api/admin/parastoo/update", ADMIN, {})
+    ch("بعد از آزادشدن exec، lifecycle دوباره پذیرفته می‌شود", code == 202)
+    b = wait_done()
+    ch("آپدیت پس از گارد: exit 0", b.get("exit_code") == 0)
 
     # ---------- update ----------
     code, b = req("POST", "/api/admin/parastoo/update", ADMIN, {})

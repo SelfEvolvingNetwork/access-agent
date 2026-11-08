@@ -4,7 +4,10 @@ Endpoints (v0.5):
   GET  /                          public service info
   GET  /healthz                   public lightweight health
   GET  /api/status                agent|admin  host status snapshot
-  POST /api/exec                  agent|admin  run a command on the host
+  POST /api/exec                  agent|admin  run a command on the host;
+                                  v0.5.1: refused 409 lifecycle_busy while a
+                                  parastoo lifecycle op runs and the cmd
+                                  mutates the platform (read-only passes)
   POST /api/github/token          agent|admin  purpose-gated token disclosure:
                                                GitHub App mode (v0.2): REAL
                                                <=1h installation tokens; master
@@ -329,6 +332,17 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self._agent_paused_guard(role, path):
                 return
+            # v0.5.1 — one platform-mutating actor at a time (owner decree
+            # «one transparent pipeline»): while a parastoo lifecycle op runs,
+            # conflicting exec is refused; read-only supervision passes.
+            blocked = parastoolifecycle.exec_block_reason(str(data.get("cmd") or ""))
+            if blocked:
+                audit(role, "exec_blocked_lifecycle",
+                      {"cmd_len": len(str(data.get("cmd") or "")),
+                       "cmd_preview": str(data.get("cmd") or "")[:200]},
+                      self._peer_ip())
+                return self._send(409, {"ok": False, "error": "lifecycle_busy",
+                                        "detail": blocked})
             res = run_exec(data.get("cmd"), data.get("timeout_s", 60), data.get("cwd"))
             if not res.get("ok"):
                 audit(role, "exec_rejected",

@@ -7,5 +7,5 @@ Design goals (owner decision 2026-11-05):
 - Custodian of the owner's GitHub PAT; issues session-scoped tokens to the agent.
 """
 
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 SERVICE_NAME = "access-agent"

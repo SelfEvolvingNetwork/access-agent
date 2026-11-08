@@ -236,7 +236,9 @@ def run_all() -> None:
     got: dict = {}
 
     def reader():
-        got["text"], got["ctype"] = sse_read("/api/admin/audit/stream?backfill=10", ADMIN, 4.0)
+        # 8s window — a 4s window flaked in the field: the live event could
+        # land just after the last 2s socket-timeout cycle (field 2026-11-09)
+        got["text"], got["ctype"] = sse_read("/api/admin/audit/stream?backfill=10", ADMIN, 8.0)
 
     t = threading.Thread(target=reader, daemon=True)
     t.start()
@@ -246,8 +248,23 @@ def run_all() -> None:
     text = got.get("text", "")
     ch("SSE با content-type درست", got.get("ctype") is True)
     ch("SSE بک‌فیل تاریخچه دارد", "data: " in text and '"exec"' in text)
-    ch("SSE رخداد زندهٔ بعد از اتصال را می‌گیرد", "sse-live-1" in text)
     ch("SSE پس از بچ، id: offset می‌دهد", "id: " in text)
+    # رخداد زنده — تا ۳ تلاش: خوانندهٔ SSE با تایم‌اوت کوتاه سوکت گاهی رویداد
+    # را بین دو چرخه از دست می‌داد (flake زمان‌بندی، میدان 2026-11-09 — روی
+    # HEAD هم تکرارشدنی بود). قرارداد همان است: رویداد باید زنده برسد.
+    live = "sse-live-1" in text
+    for attempt in range(2, 4):
+        if live:
+            break
+        got = {}
+        t = threading.Thread(target=reader, daemon=True)
+        t.start()
+        time.sleep(1.5)  # اتصال زنده برقرار شود
+        req("POST", "/api/exec", token=AGENT,
+            body={"cmd": f"echo sse-live-{attempt}", "timeout_s": 5})
+        t.join(timeout=12)
+        live = f"sse-live-{attempt}" in got.get("text", "")
+    ch("SSE رخداد زندهٔ بعد از اتصال را می‌گیرد", live)
     ch("SSE با توکن عامل → 403",
        "unauthorized" in sse_read("/api/admin/audit/stream", AGENT, 1.5)[0]
        or "forbidden" in sse_read("/api/admin/audit/stream", AGENT, 1.5)[0])

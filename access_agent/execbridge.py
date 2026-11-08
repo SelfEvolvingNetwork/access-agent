@@ -20,6 +20,43 @@ MAX_CONCURRENT = 2
 
 _sem = threading.BoundedSemaphore(MAX_CONCURRENT)
 
+# --- v0.5.1: mutual exclusivity with parastoo lifecycle ops (owner decree
+# 2026-11-09, «one transparent pipeline»): while a lifecycle operation runs,
+# exec commands that mutate the platform are refused; while a conflicting exec
+# runs, lifecycle start() refuses. The mid-install deploy race (parastoo
+# docs/LESSONS.md, field 2026-11-08) must stay structurally impossible.
+LIFECYCLE_CONFLICT_TOKENS = (
+    "bootstrap.sh", "setup.sh", "install.sh", "uninstall.sh",
+    "auto-update.sh", "factory-reset.sh", "tls-store.sh",
+    "parastoo update", "parastoo reset", "parastoo autoupdate",
+    "docker compose",
+)
+
+_active_lock = threading.Lock()
+_active_cmds: dict[int, str] = {}
+_active_seq = 0
+
+
+def lifecycle_conflict(cmd: str) -> str:
+    """First conflict token found in cmd ("" if none)."""
+    low = (cmd or "").lower()
+    for tok in LIFECYCLE_CONFLICT_TOKENS:
+        if tok in low:
+            return tok
+    return ""
+
+
+def mutation_running() -> str:
+    """Conflict token of a currently running exec that would collide with a
+    lifecycle operation ("" if none)."""
+    with _active_lock:
+        snapshot = list(_active_cmds.values())
+    for c in snapshot:
+        tok = lifecycle_conflict(c)
+        if tok:
+            return tok
+    return ""
+
 
 def run_exec(cmd, timeout_s=60, cwd=None) -> dict:
     """Run a command on the host via bash -c. Returns a structured result.
@@ -27,6 +64,7 @@ def run_exec(cmd, timeout_s=60, cwd=None) -> dict:
     On input/validation errors returns {"ok": False, "error": ..., "status": 400}
     (status 429 when the concurrency cap is hit) — the HTTP layer maps it.
     """
+    global _active_seq
     if not isinstance(cmd, str) or not cmd.strip():
         return {"ok": False, "error": "cmd_required", "status": 400}
     if len(cmd) > MAX_CMD_CHARS:
@@ -43,6 +81,10 @@ def run_exec(cmd, timeout_s=60, cwd=None) -> dict:
     if not _sem.acquire(blocking=False):
         return {"ok": False, "error": "busy",
                 "detail": f"max {MAX_CONCURRENT} concurrent execs", "status": 429}
+    with _active_lock:  # v0.5.1: track running cmds for the lifecycle guard
+        _active_seq += 1
+        seq = _active_seq
+        _active_cmds[seq] = cmd
 
     started = time.monotonic()
     timed_out = False
@@ -88,4 +130,6 @@ def run_exec(cmd, timeout_s=60, cwd=None) -> dict:
             "timed_out": timed_out,
         }
     finally:
+        with _active_lock:
+            _active_cmds.pop(seq, None)
         _sem.release()

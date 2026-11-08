@@ -73,7 +73,7 @@ curl -sk -H "Authorization: Bearer $ACCESS_AGENT_AGENT_TOKEN" \
 
 - اجرا با `bash -c` روی خودِ هاست، `stdin=/dev/null`، kill کل process-group در تایم‌اوت.
 - پاسخ: `{ok, exit_code, stdout, stderr, duration_ms, timed_out}` — هر جریان ≤ ۲۰۰هزار کاراکتر.
-- خطاها: `cmd_too_long` / `timeout_out_of_range` / `cwd_not_found` / `bad_timeout` / `busy` (429 — سقف هم‌زمانی ۲).
+- خطاها: `cmd_too_long` / `timeout_out_of_range` / `cwd_not_found` / `bad_timeout` / `busy` (429 — سقف هم‌زمانی ۲) / `lifecycle_busy` (409 از v0.5.1 — حین عملیات lifecycle پرستو، execِ متضاد با نصب/آپدیت/حذف — مثل bootstrap.sh، install.sh، docker compose — رد می‌شود؛ دستورهای خواندنی برای نظارت از راه می‌مانند و برعکس، شروع lifecycle حین اجرای execِ متضاد 409 exec_busy می‌گیرد).
 - **قاعدهٔ طلایی:** دستورهای طولانی/چندگانه را با `&&` یا اسکریپت موقتی در `/tmp` بزنید؛ خروجی بزرگ را خودتان فیلتر کنید (`tail`, `grep`) چون سقف خروجی سخت است.
 
 ## ۵) گرفتن توکن گیت‌هاب برای پوش
@@ -115,9 +115,9 @@ curl -sk -H "Authorization: Bearer $ACCESS_AGENT_AGENT_TOKEN" \
 ## ۷) الگوی ترتیب کارها وقتی پرستو پایین است (سناریوی اصلی این پروژه)
 
 1. `GET /healthz` + `GET /api/status` روی access-agent → وضعیت واقعی هاست.
-2. `exec: systemctl status parastoo-autoupdate.timer --no-pager` و `docker ps -a --format ...` → علت 502.
+2. `GET /api/admin/parastoo/lifecycle-status` (ادمین) و `exec: docker ps -a --format ...` → علت 502. (از پل v0.5.1 تایمر آپدیت خودکار پرستو حذف شده — `systemctl status parastoo-autoupdate.timer` دیگر بخشی از تشخیص نیست.)
 3. `exec: tail -n 40 <مسیر نصب پرستو>/logs/update.log` → آخرین چرخهٔ آپدیت.
-4. تعمیر طبق پروتکل M5 سند پرستو: در صورت نیاز `sudo bash scripts/auto-update.sh --force` داخل مسیر نصب، یا بازسازی `docker compose up -d --build core`.
+4. تعمیر طبق پروتکل M5 سند پرستو: استقرار صریح با `POST /api/admin/parastoo/update` (lifecycle پل)، یا در سطح سرور `sudo parastoo update` / `docker compose up -d --build core`. نصب/آپدیت با exec مستقیمِ bootstrap ممنوع است — تنها کانال مجاز lifecycle پل است (گارد متقابل 409 جلوی بازیگر موازی را می‌گیرد).
 5. راستی‌آزمایی زندهٔ پرستو (`tests/e2e_live.py`) → اگر سبز شد، گزارش به مالک با SHA مستقر.
 
 از این پس هیچ‌یک از این گام‌ها به زنده‌بودن پرستو وابسته نیست — این کل معنای معماری جدید است.

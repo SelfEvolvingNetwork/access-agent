@@ -8,6 +8,12 @@ Rules (non-negotiable):
 - Admin realm only (guard lives in server.py); every transition audited;
   no secret ever reaches the log or audit (installer prints none by contract).
 - Max ONE lifecycle operation at a time; a second call gets 409 busy.
+- Mutual exclusivity with /api/exec (v0.5.1, owner decree 2026-11-09 «one
+  transparent pipeline»): while an operation runs, exec requests matching
+  install/update/uninstall patterns get 409 lifecycle_busy (read-only
+  supervision still passes); while a conflicting exec runs, start()
+  refuses with 409 exec_busy. The mid-install deploy race (parastoo
+  docs/LESSONS.md, field 2026-11-08) is structurally closed.
 - Operations run in a background thread; output appends to a log file under
   ACCESS_AGENT_HOME/parastoo-lifecycle/ (root-only directory, chmod 600).
 - "Full uninstall" = uninstall.sh answered y/y (drop projects/volumes) PLUS
@@ -33,6 +39,7 @@ import threading
 import time
 from pathlib import Path
 
+from . import execbridge
 from .security import audit, home, now_iso
 
 ACTIONS = ("install", "uninstall", "reinstall", "update")
@@ -58,6 +65,26 @@ _lock = threading.Lock()
 def _dir_file() -> Path:
     return Path(os.environ.get(
         "ACCESS_AGENT_PARASTOO_DIR_FILE", "/etc/parastoo-install-path"))
+
+
+def is_busy() -> bool:
+    with _lock:
+        return bool(_state.get("busy"))
+
+
+def exec_block_reason(cmd: str) -> str:
+    """Non-empty refusal reason for an exec request while a lifecycle operation
+    is running (mutating commands only — read-only supervision still passes)."""
+    with _lock:
+        busy = bool(_state.get("busy"))
+        action = _state.get("action", "")
+    if not busy:
+        return ""
+    tok = execbridge.lifecycle_conflict(cmd)
+    if not tok:
+        return ""
+    return (f'lifecycle operation "{action}" is running; exec matching '
+            f'"{tok}" is refused — poll /api/admin/parastoo/lifecycle-status')
 
 
 def install_path() -> str:
@@ -231,6 +258,12 @@ def start(action: str, confirm: str = "") -> dict:
         if _state.get("busy"):
             return {"ok": False, "error": "busy",
                     "detail": f'operation "{_state.get("action")}" is still running',
+                    "status": 409}
+        mut = execbridge.mutation_running()  # v0.5.1: opposite side of the guard
+        if mut:
+            return {"ok": False, "error": "exec_busy",
+                    "detail": f"an exec matching '{mut}' is still running — "
+                              f"refusing to start a lifecycle op in parallel",
                     "status": 409}
         ins = installed()
         if action in ("uninstall", "update") and not ins:
