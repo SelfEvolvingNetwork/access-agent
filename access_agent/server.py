@@ -1,6 +1,6 @@
 """HTTPS bridge server — access_agent.server (pure Python stdlib).
 
-Endpoints (v0.2):
+Endpoints (v0.3):
   GET  /                          public service info
   GET  /healthz                   public lightweight health
   GET  /api/status                agent|admin  host status snapshot
@@ -11,8 +11,17 @@ Endpoints (v0.2):
                                                PAT never served. PAT mode (v0.1
                                                fallback while no app is set).
   GET  /api/admin/audit           admin        audit tail (?tail=N)
+  GET  /api/admin/audit/stream    admin        SSE live audit tail (v0.3;
+                                               ?cursor=byte-offset, ?backfill=N)
   GET  /api/admin/sessions        admin        github grant tail (?tail=N)
-  POST /api/admin/rotate-agent-token  admin   new agent token (printed once)
+  GET  /api/admin/agent-token     admin        agent token metadata — never the
+                                               token itself (v0.3)
+  GET  /api/admin/handoff         admin        ready-to-paste handoff block for
+                                               the AI agent (v0.3, parastoo-mobile)
+  POST /api/admin/agent-realm/pause   admin   kill switch: block/unblock the
+                                               whole agent realm (v0.3, persists)
+  POST /api/admin/rotate-agent-token  admin   new agent token (printed once;
+                                               optional {label} stored as meta)
   POST /api/admin/revoke-agent-token  admin   disable agent realm
   POST /api/admin/set-github-token    admin   store the owner's GitHub PAT
 
@@ -36,7 +45,10 @@ from . import VERSION
 from . import githubapp
 from .execbridge import run_exec
 from .githubbroker import disclose, grants_tail, save_token, stored_token
-from .security import audit, audit_tail, check_token, home, load_tokens, save_tokens, sha256_hex
+from .handoff import build_block
+from .security import (audit, audit_tail, agent_paused, check_token, home,
+                       load_state, load_tokens, now_iso, save_tokens,
+                       set_agent_paused, sha256_hex)
 
 MAX_BODY = 100_000
 MAX_BODY_HARD = 1_000_000
@@ -47,9 +59,12 @@ POST_ONLY = {
     "/api/github/token",
     "/api/admin/rotate-agent-token",
     "/api/admin/revoke-agent-token",
+    "/api/admin/agent-realm/pause",
     "/api/admin/set-github-token",
 }
-GET_ONLY = {"/", "/healthz", "/api/status", "/api/admin/audit", "/api/admin/sessions"}
+GET_ONLY = {"/", "/healthz", "/api/status", "/api/admin/audit",
+            "/api/admin/audit/stream", "/api/admin/sessions",
+            "/api/admin/agent-token", "/api/admin/handoff"}
 
 
 # ---------- helpers ----------
@@ -101,6 +116,7 @@ def host_status() -> dict:
         "parastoo_install_path": parastoo_path,
         "github_token_stored": bool(stored_token()),
         "agent_realm_enabled": bool(load_tokens().get("agent_sha", "")),
+        "agent_realm_paused": bool(load_state().get("agent_paused")),
     }
 
 
@@ -224,6 +240,8 @@ class Handler(BaseHTTPRequestHandler):
         if not role:
             return
         if path == "/api/status":
+            if self._agent_paused_guard(role, path):
+                return
             audit(role, "status", {}, self._peer_ip())
             return self._send(200, host_status())
         if path == "/api/admin/audit":
@@ -240,6 +258,32 @@ class Handler(BaseHTTPRequestHandler):
             tail = self._query_int("tail", 50)
             audit(role, "admin_sessions_tail", {"tail": tail}, self._peer_ip())
             return self._send(200, {"ok": True, "grants": grants_tail(tail)})
+        if path == "/api/admin/audit/stream":
+            role = self._guard("admin")
+            if not role:
+                return
+            audit(role, "admin_audit_stream", {"q": self.path.split("?", 1)[1] if "?" in self.path else ""},
+                  self._peer_ip())
+            return self._stream_audit()
+        if path == "/api/admin/agent-token":
+            role = self._guard("admin")
+            if not role:
+                return
+            toks = load_tokens()
+            audit(role, "admin_agent_token_meta", {}, self._peer_ip())
+            return self._send(200, {"ok": True, "set": bool(toks.get("agent_sha", "")),
+                                    "meta": toks.get("agent_meta") or {}})
+        if path == "/api/admin/handoff":
+            role = self._guard("admin")
+            if not role:
+                return
+            try:
+                block = build_block()
+            except Exception as e:
+                return self._send(409, {"ok": False, "error": "handoff_unavailable",
+                                        "detail": str(e)})
+            audit(role, "admin_handoff_served", {}, self._peer_ip())
+            return self._send(200, {"ok": True, "block": block})
         self._send(404, {"ok": False, "error": "not_found", "path": path})
 
     # ---- POST ----
@@ -262,22 +306,32 @@ class Handler(BaseHTTPRequestHandler):
             role = self._guard("agent")
             if not role:
                 return
+            if self._agent_paused_guard(role, path):
+                return
             res = run_exec(data.get("cmd"), data.get("timeout_s", 60), data.get("cwd"))
             if not res.get("ok"):
                 audit(role, "exec_rejected",
                       {"error": res.get("error"), "cmd_len": len(str(data.get("cmd") or ""))},
                       self._peer_ip())
                 return self._send(res.get("status", 400), res)
+            # v0.3: richer live-monitoring record for parastoo-mobile — bounded
+            # previews so audit.jsonl stays lean; the agent produces no reports,
+            # the bridge captures everything software-side.
             audit(role, "exec",
                   {"exit_code": res.get("exit_code"), "timed_out": res.get("timed_out"),
+                   "duration_ms": res.get("duration_ms"),
                    "cmd_len": len(str(data.get("cmd") or "")),
-                   "cmd_preview": str(data.get("cmd") or "")[:160]},
+                   "cmd_preview": str(data.get("cmd") or "")[:400],
+                   "stdout_preview": str(res.get("stdout") or "")[:600],
+                   "stderr_preview": str(res.get("stderr") or "")[:300]},
                   self._peer_ip())
             return self._send(200, res)
 
         if path == "/api/github/token":
             role = self._guard("agent")
             if not role:
+                return
+            if self._agent_paused_guard(role, path):
                 return
             # v0.2: GitHub App mode serves REAL <=1h installation tokens and
             # never touches the master PAT; PAT mode stays only as the
@@ -298,9 +352,12 @@ class Handler(BaseHTTPRequestHandler):
             new_token = "aa_" + pysecrets.token_hex(24)
             toks = load_tokens()
             toks["agent_sha"] = sha256_hex(new_token)
+            toks["agent_meta"] = {"label": str(data.get("label") or "")[:80],
+                                  "rotated_at": now_iso()}
             save_tokens(toks)
             self._write_secret_file("agent-token", new_token)
-            audit(role, "admin_rotate_agent_token", {}, self._peer_ip())
+            audit(role, "admin_rotate_agent_token",
+                  {"label": str(data.get("label") or "")[:80]}, self._peer_ip())
             return self._send(200, {"ok": True, "agent_token": new_token,
                                     "note": "give it to the AI agent; the old one is dead now"})
 
@@ -313,6 +370,19 @@ class Handler(BaseHTTPRequestHandler):
             save_tokens(toks)
             audit(role, "admin_revoke_agent_token", {}, self._peer_ip())
             return self._send(200, {"ok": True, "detail": "agent realm disabled; rotate to re-enable"})
+
+        if path == "/api/admin/agent-realm/pause":
+            # v0.3 mobile kill switch — persists in state.json, survives restarts
+            role = self._guard("admin")
+            if not role:
+                return
+            paused = bool(data.get("paused"))
+            reason = str(data.get("reason") or "")[:300]
+            st = set_agent_paused(paused, reason)
+            audit(role, "admin_pause_agent_realm" if paused else "admin_resume_agent_realm",
+                  {"reason": st.get("reason", "")}, self._peer_ip())
+            return self._send(200, {"ok": True, "agent_paused": st["agent_paused"],
+                                    "reason": st.get("reason", "")})
 
         if path == "/api/admin/set-github-token":
             role = self._guard("admin")
@@ -341,6 +411,98 @@ class Handler(BaseHTTPRequestHandler):
         p = d / name
         p.write_text(value + "\n", encoding="utf-8")
         p.chmod(0o600)
+
+    def _agent_paused_guard(self, role: str, path: str) -> bool:
+        """v0.3 kill switch: while the agent realm is paused, agent-role calls to
+        work endpoints get 403. Admin passes always; returns True if blocked."""
+        if role != "agent":
+            return False
+        paused, reason = agent_paused()
+        if not paused:
+            return False
+        audit("agent", "agent_blocked_paused", {"path": path}, self._peer_ip())
+        self._send(403, {"ok": False, "error": "agent_realm_paused",
+                         "detail": reason or "agent realm paused by owner"})
+        return True
+
+    def _stream_audit(self) -> None:
+        """v0.3 — SSE live tail of audit/audit.jsonl (admin only).
+
+        Query: ?cursor=<byte offset> resume after disconnect;
+               ?backfill=N replay last N lines on fresh connect (default 50,
+               cap 500). Heartbeat comment every ~15s. The stream itself never
+               writes to audit (no feedback loop). Byte-offset id after every
+               batch lets the client resume exactly where it left off."""
+        import urllib.parse
+        q: dict[str, str] = {}
+        if "?" in self.path:
+            for part in self.path.split("?", 1)[1].split("&"):
+                k, _, v = part.partition("=")
+                q[k] = urllib.parse.unquote(v)
+        p = home() / "audit" / "audit.jsonl"
+        try:
+            offset = int(q.get("cursor", ""))
+        except ValueError:
+            offset = -1
+        try:
+            backfill = max(1, min(int(q.get("backfill", "50")), 500))
+        except ValueError:
+            backfill = 50
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            if p.exists():
+                size = p.stat().st_size
+                if offset > size:
+                    offset = -1  # file shrank/rotated — fall back to backfill
+                if offset < 0:
+                    window = min(size, 262_144)
+                    with p.open("rb") as f:
+                        f.seek(size - window)
+                        chunk = f.read().splitlines()
+                    for line in chunk[-backfill:]:
+                        self.wfile.write(b"data: " + line + b"\n\n")
+                    self.wfile.flush()
+                    offset = size
+                else:
+                    with p.open("rb") as f:
+                        f.seek(offset)
+                        pending = f.read()
+                    nl = pending.rfind(b"\n")
+                    if nl >= 0:
+                        for line in pending[:nl].splitlines():
+                            self.wfile.write(b"data: " + line + b"\n\n")
+                        offset += nl + 1
+                    self.wfile.flush()
+            self.wfile.write(f"id: {offset}\n\n".encode("ascii"))
+            self.wfile.flush()
+            last_ping = time.monotonic()
+            while True:
+                time.sleep(0.5)
+                if p.exists():
+                    size = p.stat().st_size
+                    if size > offset:
+                        with p.open("rb") as f:
+                            f.seek(offset)
+                            pending = f.read()
+                        nl = pending.rfind(b"\n")
+                        if nl >= 0:
+                            for line in pending[:nl].splitlines():
+                                self.wfile.write(b"data: " + line + b"\n\n")
+                            offset += nl + 1
+                            self.wfile.write(f"id: {offset}\n\n".encode("ascii"))
+                            self.wfile.flush()
+                            last_ping = time.monotonic()
+                if time.monotonic() - last_ping > 15:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+                    last_ping = time.monotonic()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass  # client went away — normal SSE lifecycle
+        finally:
+            self.close_connection = True
 
 
 # ---------- main ----------

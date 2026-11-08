@@ -84,3 +84,44 @@ def audit_tail(n: int) -> list[str]:
         return [l.rstrip("\n") for l in lines[-max(0, min(n, 2000)):]]
     except Exception:
         return []
+
+
+# ---------- agent-realm pause state (v0.3 — mobile kill switch) ----------
+# state.json (chmod 600): {"agent_paused": bool, "reason": str, "ts": iso}
+# Paused realm only blocks the agent role; admin stays a full superset and
+# public endpoints (/healthz) are untouched. Survives service restarts.
+
+def load_state() -> dict:
+    p = home() / "state.json"
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {"agent_paused": False, "reason": "", "ts": ""}
+
+
+def save_state(data: dict) -> None:
+    p = home() / "state.json"
+    data["ts"] = now_iso()
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(p)
+    try:
+        p.chmod(0o600)
+    except Exception:
+        pass
+
+
+def agent_paused() -> tuple[bool, str]:
+    s = load_state()
+    return bool(s.get("agent_paused")), str(s.get("reason", ""))
+
+
+def set_agent_paused(paused: bool, reason: str = "") -> dict:
+    s = load_state()
+    s["agent_paused"] = bool(paused)
+    s["reason"] = str(reason)[:300]
+    save_state(s)
+    return s

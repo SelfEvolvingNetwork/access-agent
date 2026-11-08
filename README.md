@@ -84,10 +84,24 @@ sudo access-agent handoff
 | `POST /api/exec` | agent \| admin | اجرای دستور روی هاست (معادل SSH) |
 | `POST /api/github/token` | agent \| admin | توکن گیت‌هاب با هدف ثبت‌شده — v0.2: توکن نصب واقعی ≤۱ساعته (GitHub App)؛ فالبک: افشای نشست‌محور پات |
 | `GET /api/admin/audit` | admin | دم audit |
+| `GET /api/admin/audit/stream` | admin | **v0.3 — جریان زندهٔ SSE audit** (مانیتور موبایل)؛ `?cursor=` ادامه از آفست بایت، `?backfill=N` تاریخچهٔ اولیه |
 | `GET /api/admin/sessions` | admin | فهرست grantهای توکن گیت‌هاب |
-| `POST /api/admin/rotate-agent-token` | admin | توکن عامل جدید (قدیمی می‌میرد) |
+| `GET /api/admin/agent-token` | admin | **v0.3** — متادیتای توکن عامل (برچسب/زمان) — هرگز خود توکن را نمی‌دهد |
+| `GET /api/admin/handoff` | admin | **v0.3** — همان بلوک تحویل آمادهٔ کپی برای عامل، سرو شده به ادمین (پرستو موبایل) |
+| `POST /api/admin/agent-realm/pause` | admin | **v0.3 — کلید توقف**: توقف/ادامهٔ کل قلمرو عامل با دلیل؛ در `state.json` ماندگار است؛ ادمین همیشه آزاد |
+| `POST /api/admin/rotate-agent-token` | admin | توکن عامل جدید (قدیمی می‌میرد؛ v0.3: برچسب اختیاری در متادیتا) |
 | `POST /api/admin/revoke-agent-token` | admin | قطع قلمرو عامل |
 | `POST /api/admin/set-github-token` | admin | ذخیره/تعویض پات مالک |
+
+## پرستو موبایل (v0.3 — ادمین در جیب)
+
+اپ اندروید رسمی مدیریت و مانیتورینگ: مخزن [`SelfEvolvingNetwork/parastoo-mobile`](https://github.com/SelfEvolvingNetwork/parastoo-mobile).
+
+- ادمین سرور را با URL + اثرانگشت گواهی + توکن ادمین اضافه می‌کند؛ ورودهای بعدی با قفل گوشی (بیومتریک/PIN).
+- «بلوک تحویل» آماده را با یک لمس می‌سازد و کپی می‌کند (`POST /api/admin/rotate-agent-token` + `GET /api/admin/handoff`) — عامل جدید فقط کپی می‌خواهد.
+- **مانیتور زنده بدون بار روی عامل:** همه‌چیز سمت پل ثبت و از طریق SSE (`GET /api/admin/audit/stream`) به موبایل می‌آید؛ عامل هیچ گزارشی تولید نمی‌کند.
+- **کلید توقف:** `POST /api/admin/agent-realm/pause` — قلمرو عامل فوراً ۴۰۳ می‌گیرد، ادمین و healthz دست‌نخورده، پس از ریستارت هم برقرار.
+- پیش‌نیاز: access-agent ≥ **v0.3.0** روی سرور (ارتقا: اجرای دوبارهٔ `bootstrap.sh` — توکن‌ها/گواهی/audit حفظ می‌شوند).
 
 ## فرمان‌های مالک روی سرور (CLI کمکی)
 
@@ -114,9 +128,10 @@ curl -fsSL https://raw.githubusercontent.com/SelfEvolvingNetwork/access-agent/ma
 
 ## نقشهٔ راه
 
-- **v0.1.3 (این نسخه):** متن تحویل (handoff) — بلوک آمادهٔ کپی‌پیست برای عامل هوش مصنوعی، در خروجی نصب و فرمان `access-agent handoff`
+- **v0.3 (این نسخه):** پرستو موبایل — جریان زندهٔ SSE audit، کلید توقف قلمرو عامل، متادیتای توکن عامل، endpoint بلوک تحویل، رکورد exec غنی‌شده برای مانیتور
+- **v0.1.3:** متن تحویل (handoff) — بلوک آمادهٔ کپی‌پیست برای عامل هوش مصنوعی، در خروجی نصب و فرمان `access-agent handoff`
 - **v0.2:** توکن موقت واقعی گیت‌هاب با GitHub App (توکن نصبی ۱ساعتهٔ فقط-مخزن) — مالک یک‌بار App می‌سازد؛ مسیر افشا به‌عنوان فال‌بک می‌ماند
-- **v0.3:** کانال آپدیت پایدار (تگ) + آپدیتر خودکار access-agent جدا از پوش‌های main
+- **v0.4:** کانال آپدیت پایدار (تگ) + آپدیتر خودکار access-agent جدا از پوش‌های main
 - هر زمان: تعویض گواهی خودامضا با ACME اگر دامنه به این سرویس وصل شد
 
 ## خطوط قرمز (غیرقابل مذاکره)
