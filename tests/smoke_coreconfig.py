@@ -133,9 +133,10 @@ def run() -> None:
 
     # ---------- module-level: پیش‌فرض جاسازی‌شده ----------
     snap = appcore.snapshot()
+    DEF_REV = appcore.DEFAULT_PAYLOAD["revision"]  # از قرارداد بخوان، هاردکد نکن
     ch("پاکت پیش‌فرض ok=True", snap.get("ok") is True)
     ch("schema درست", snap.get("schema") == appcore.SCHEMA)
-    ch("revision پیش‌فرض = 1", snap.get("revision") == 1)
+    ch("revision پیش‌فرض از DEFAULT_PAYLOAD", snap.get("revision") == DEF_REV)
     ch("min_version_code = 17 (اپ 0.4.12)", snap.get("min_version_code") == 17)
     ch("منبع = default", snap.get("source") == "default")
     cfg = json.loads(snap.get("config_json", "{}"))
@@ -161,7 +162,7 @@ def run() -> None:
     odir.mkdir(parents=True, exist_ok=True)
     ov = {
         "schema": appcore.SCHEMA,
-        "revision": 2,
+        "revision": DEF_REV + 1,  # همیشه یک قدم جلوتر از پیش‌فرض — اثباتِ واقعی اورراید
         "min_version_code": 17,
         "config": {
             "endpoints": {"core_config": "/api/admin/app/core-config"},
@@ -171,7 +172,7 @@ def run() -> None:
     }
     (odir / "core.json").write_text(json.dumps(ov, ensure_ascii=False), encoding="utf-8")
     snap2 = appcore.snapshot()
-    ch("اورراید معتبر → revision=2", snap2.get("revision") == 2)
+    ch("اورراید معتبر → revision جلوتر از پیش‌فرض", snap2.get("revision") == DEF_REV + 1)
     ch("اورراید معتبر → source=override", snap2.get("source") == "override")
     cfg2 = json.loads(snap2.get("config_json", "{}"))
     ch("متن سفارشی از اورراید می‌آید",
@@ -179,8 +180,8 @@ def run() -> None:
     ch("فلگ مخفی‌سازی از اورراید می‌آید",
        cfg2.get("flags", {}).get("bridge_self_destruct_visible") is False)
     code, b = req("GET", "/api/admin/app/core-config", token=ADMIN)
-    ch("HTTP اورراید را می‌بیند (revision=2)",
-       code == 200 and b.get("revision") == 2 and b.get("source") == "override")
+    ch("HTTP اورراید را می‌بیند (revision جلوتر)",
+       code == 200 and b.get("revision") == DEF_REV + 1 and b.get("source") == "override")
 
     # ---------- override نامعتبر → فالبک امن ----------
     bad_cases = {
@@ -194,10 +195,10 @@ def run() -> None:
         (odir / "core.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         s = appcore.snapshot()
         ch(f"اورراید نامعتبر ({name}) → فالبک به پیش‌فرض",
-           s.get("revision") == 1 and s.get("source") == "default" and bool(s.get("note")))
+           s.get("revision") == DEF_REV and s.get("source") == "default" and bool(s.get("note")))
     (odir / "core.json").write_text("{این جیسون نیست", encoding="utf-8")
     s = appcore.snapshot()
-    ch("اورراید JSON خراب → فالبک امن", s.get("revision") == 1 and s.get("source") == "default")
+    ch("اورراید JSON خراب → فالبک امن", s.get("revision") == DEF_REV and s.get("source") == "default")
 
     # ---------- دستکاری متن config_json در راه (شبیه‌سازی در اپ) ----------
     tampered = json.loads(json.dumps(snap2))
