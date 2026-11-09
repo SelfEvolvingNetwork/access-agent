@@ -173,6 +173,18 @@ def run_all() -> None:
     code, b = req("POST", "/api/admin/parastoo/nope", ADMIN, {})
     ch("عملیات ناشناخته = 404", code == 404 and b.get("error") == "unknown_action")
 
+    # ---------- setup-token (v0.5.3) — fresh host, nothing installed ----------
+    code, b = req("GET", "/api/admin/parastoo/setup-token")
+    ch("setup-token بدون توکن = 401", code == 401)
+    code, b = req("GET", "/api/admin/parastoo/setup-token", AGENT)
+    ch("setup-token با توکن عامل = 403 (فقط ادمین)", code == 403)
+    code, b = req("GET", "/api/admin/parastoo/setup-token", ADMIN)
+    ch("setup-token ادمین روی هاست نو: installed=false، has_token=false",
+       code == 200 and b.get("installed") is False and b.get("has_token") is False
+       and b.get("setup_token") == "")
+    code, b = req("POST", "/api/admin/parastoo/setup-token", ADMIN, {})
+    ch("setup-token با POST = 405 (GET_ONLY)", code == 405)
+
     # ---------- install (gated on GO for the busy window) ----------
     code, b = req("POST", "/api/admin/parastoo/install", ADMIN, {})
     ch("نصب پذیرفته شد = 202", code == 202 and b.get("accepted") is True)
@@ -246,6 +258,32 @@ def run_all() -> None:
     ch("نصب مجدد: exit 0", b.get("exit_code") == 0)
     ch("نصب مجدد: هر دو فاز در یک لاگ", "phase 1/2" in joined and "phase 2/2" in joined)
     ch("نصب مجدد: در پایان نصب است", b.get("installed") is True)
+
+    # ---------- setup-token (v0.5.3) — installed tree with a real .env ----------
+    TOKEN = "abcd-efgh-ijkl"
+    (FAKE / ".env").write_text(
+        "# parastoo env\n"
+        f"PARASTOO_SETUP_TOKEN={TOKEN}\n"
+        "BASE_DOMAIN=example.tld\n"
+        "TLS_ENABLED=true\n"
+        "ACME_EMAIL=admin@example.tld\n"
+        "SETUP_TOKEN=should-not-be-read\n",
+        encoding="utf-8")
+    code, b = req("GET", "/api/admin/parastoo/setup-token", ADMIN)
+    ch("setup-token روی نصب قلابی: توکن/دامنه/TLS درست خوانده شد",
+       code == 200 and b.get("installed") is True and b.get("has_token") is True
+       and b.get("setup_token") == TOKEN and b.get("base_domain") == "example.tld"
+       and b.get("tls_enabled") is True
+       and b.get("panel_url") == "https://panel.example.tld"
+       and b.get("setup_url") == "https://panel.example.tld/setup"
+       and b.get("parastoo_version") == "0.9.9-test")
+    code, b = req("GET", "/api/admin/audit?tail=200", ADMIN)
+    blob = "\n".join(b.get("lines", []))
+    ch("audit: رویداد setup-token فقط بولین دارد — خودِ توکن هرگز در audit نیست",
+       "admin_parastoo_setup_token" in blob and TOKEN not in blob
+       and "should-not-be-read" not in blob)
+    log_blob = (Path(TMP) / "server.log").read_text(encoding="utf-8", errors="replace")
+    ch("لاگ سرور هم عاری از خودِ توکن است", TOKEN not in log_blob)
 
     # ---------- audit trail ----------
     code, b = req("GET", "/api/admin/audit?tail=200", ADMIN)

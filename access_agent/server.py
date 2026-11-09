@@ -28,6 +28,9 @@ Endpoints (v0.5):
   POST /api/admin/revoke-agent-token  admin   disable agent realm
   POST /api/admin/set-github-token    admin   store the owner's GitHub PAT
   GET  /api/admin/parastoo/lifecycle-status  admin  parastoo install state + progress
+  GET  /api/admin/parastoo/setup-token       admin  setup-wizard token + domain
+                                               facts for the phone UI (v0.5.3);
+                                               value never logged or audited
   POST /api/admin/parastoo/install     admin  official bootstrap install (v0.5,
                                                owner directive: phone-only admin)
   POST /api/admin/parastoo/uninstall   admin  FULL removal incl. /var/lib/parastoo
@@ -82,7 +85,8 @@ POST_ONLY = {
 GET_ONLY = {"/", "/healthz", "/api/status", "/api/admin/audit",
             "/api/admin/audit/stream", "/api/admin/sessions",
             "/api/admin/agent-token", "/api/admin/handoff",
-            "/api/admin/parastoo/lifecycle-status"}
+            "/api/admin/parastoo/lifecycle-status",
+            "/api/admin/parastoo/setup-token"}
 
 
 # ---------- helpers ----------
@@ -308,6 +312,19 @@ class Handler(BaseHTTPRequestHandler):
                 return
             audit(role, "admin_parastoo_status", {}, self._peer_ip())
             return self._send(200, parastoolifecycle.status_snapshot())
+        if path == "/api/admin/parastoo/setup-token":
+            role = self._guard("admin")
+            if not role:
+                return
+            # v0.5.3 — the owner finishes the panel wizard from the phone:
+            # token + domain facts ride the pinned TLS channel; the audit
+            # records booleans only (token value never in log/audit).
+            info = parastoolifecycle.setup_token_info()
+            audit(role, "admin_parastoo_setup_token",
+                  {"installed": bool(info.get("installed")),
+                   "has_token": bool(info.get("has_token"))},
+                  self._peer_ip())
+            return self._send(200, info)
         self._send(404, {"ok": False, "error": "not_found", "path": path})
 
     # ---- POST ----

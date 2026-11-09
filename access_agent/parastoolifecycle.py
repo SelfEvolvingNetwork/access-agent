@@ -116,6 +116,62 @@ def version() -> str:
         return ""
 
 
+# ---------- setup-wizard token (v0.5.3, parastoo-mobile) ----------
+
+_ENV_KEYS = ("PARASTOO_SETUP_TOKEN", "BASE_DOMAIN", "TLS_ENABLED", "ACME_EMAIL")
+
+
+def _read_env(path: Path) -> dict:
+    """Flat KEY=value reader for the installed .env — comments/quotes tolerated."""
+    out: dict[str, str] = {}
+    try:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key = key.strip()
+            if key in _ENV_KEYS and key not in out:
+                out[key] = val.strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return out
+
+
+def setup_token_info() -> dict:
+    """Facts the owner's phone needs to finish the panel setup wizard WITHOUT
+    ssh (owner directive 2026-11-09: «توکن نصب باید در پرستو موبایل نمایش
+    داده شود»): the PARASTOO_SETUP_TOKEN plus domain/TLS context so the app
+    can offer a one-tap link to the wizard. admin realm only (guard in
+    server.py); the token value NEVER reaches log or audit — the audit event
+    carries the has_token boolean only, same contract as github.env."""
+    installed_ok = installed()
+    p = install_path()
+    if not installed_ok or not p:
+        return {"ok": True, "installed": False, "has_token": False,
+                "setup_token": "", "base_domain": "", "tls_enabled": False,
+                "acme_email": "", "panel_url": "", "setup_url": "",
+                "parastoo_version": version()}
+    env = _read_env(Path(p) / ".env")
+    token = env.get("PARASTOO_SETUP_TOKEN", "")
+    domain = env.get("BASE_DOMAIN", "")
+    tls = env.get("TLS_ENABLED", "").strip().lower() == "true"
+    scheme = "https" if tls else "http"
+    panel = f"{scheme}://panel.{domain}" if domain else ""
+    return {
+        "ok": True,
+        "installed": True,
+        "has_token": bool(token),
+        "setup_token": token,
+        "base_domain": domain,
+        "tls_enabled": tls,
+        "acme_email": env.get("ACME_EMAIL", ""),
+        "panel_url": panel,
+        "setup_url": f"{panel}/setup" if panel else "",
+        "parastoo_version": version(),
+    }
+
+
 def _log_dir() -> Path:
     d = home() / "parastoo-lifecycle"
     d.mkdir(parents=True, exist_ok=True)
