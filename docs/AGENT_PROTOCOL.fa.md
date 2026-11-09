@@ -153,6 +153,32 @@ curl -sk -H "Authorization: Bearer $ACCESS_AGENT_AGENT_TOKEN" \
 - منبع: فایل اورراید `ACCESS_AGENT_HOME/app-core/core.json` (کل فایل معتبر یا هیچ — ادغام جزئی نداریم؛ نامعتبر → فالبک امن به پیش‌فرض جاسازی‌شده با `note` در پاسخ).
 - اپ فقط `revision` **بزرگ‌تر** را می‌پذیرد و `min_version_code > versionCode خودش` را رد می‌کند؛ هر خطا = ادامه با نسخهٔ فعلی (asset باندل‌شدهٔ داخل APK همیشه فالبک است — اپ بدون این endpoint هم کامل کار می‌کند).
 
+## ۵.۹) چت‌روم مالک ↔ عامل — v0.6.0
+
+قرارداد مادر: `docs/CHAT_ROOM.fa.md` (مخزن parastoo) + تصمیمات مالک ۲۰۲۶-۱۱-۱۰ (زمان‌بند ۵دقیقه‌ای + مسیر گذار؛ وب سبک فاز ۱؛ SSE؛ تاریخچه همیشگی + پشتیبان؛ فاز ۳ بعداً).
+
+**واحد داده:** پیام `{id, ts, sender: host|agent, text ≤4000, reply_to?, read_at?}` — متن ساده؛ «پیام = داده نه فرمان»؛ هیچ محتوایی اجرا نمی‌شود.
+
+| مسیر | دسترسی | کارکرد |
+|---|---|---|
+| `GET /chat` | عمومی | صفحهٔ وب چت (داده فقط با توکن چت) |
+| `POST /api/chat/auth` | chat | تبدیل توکن چت به کوکی HttpOnly (۲۹ روز) برای صفحهٔ وب |
+| `GET /api/chat/messages?since_id=&limit=` | chat\|admin | تاریخچه (صفحه‌بندی تا ۵۰۰) |
+| `POST /api/chat/send` | chat\|admin | پیام مالک (sender همیشه `host`) |
+| `POST /api/chat/read` | chat\|admin | علامت خوانده‌شدن پیام‌های عامل |
+| `GET /api/chat/stream` | chat\|admin | SSE زنده (آینهٔ JSONL؛ `?cursor=` بایت، `?backfill=N`) |
+| `GET /api/agent/chat/poll?since_id=` | agent | پیام‌های تازهٔ مالک + علامت خوانده‌شدن خودکار |
+| `POST /api/agent/chat/reply` | agent | پاسخ عامل (sender همیشه `agent`) |
+| `GET /api/admin/chat/export` | admin | خروجی کامل JSONL (ضد قفل‌شدگی) |
+| `GET /api/admin/chat/token` / `token/show` / `token/rotate` | admin | متادیتا / نمایش / چرخش توکن چت (`aachat_…`) |
+
+**قواعد امنیتی:**
+- سه قلمرو توکن: admin / agent / **chat** (`chat_sha` در tokens.json، راز خام در `secrets/chat-token` با 600). توکن چت صرفاً چت است، جدا از ادمین و قابل ابطال با rotate.
+- **جعل فرستنده غیرممکن است:** sender از توکن احراز تعیین می‌شود نه از بدنهٔ درخواست؛ توکن عامل روی مسیرهای «مالک» رد می‌شود و توکن چت/ادمین روی مسیرهای «عامل».
+- سقف نرخ ۳۰ پیام/دقیقه از هر سو (429)؛ کلید توقف `agent-realm/pause` مسیر عامل چت را 403 می‌کند در حالی که مالک آزاد می‌ماند.
+- متن پیام هرگز در audit/لاگ نمی‌نشیند (فقط id/طول/شمار)؛ ذخیره: `ACCESS_AGENT_HOME/chat/chat.db` + آینهٔ `chat/chat.jsonl`؛ پشتیبان روزانه (۳۰ نسخه) در `backups/`.
+- صفحهٔ وب از CSP سخت (`default-src 'none'`) + رندر textContent (بدون innerHTML) استفاده می‌کند؛ گواهی پل خودامضا است — در اولین بازدید مرورگر هشدار می‌دهد؛ پین رسمی گواهی در سند نصب است.
+
 ## ۶) خطوط قرمز ویژهٔ این پل
 
 1. `audit.jsonl` فقط‌افزایشی است؛ عامل آن را نمی‌خواند برای پاک‌کاری و هرگز دستکاری نمی‌کند (خواندن با توکن ادمین است، نه عامل).
