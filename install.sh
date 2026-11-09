@@ -27,6 +27,24 @@ hostns() {
   fi
 }
 
+# v0.5.2 — single token-writer used by BOTH the fresh path and the re-provision
+# reset path (contract: Parastoo Mobile «رمز روت = مالکیت»). Never prints tokens.
+write_tokens() {  # $1=ETC  $2=admin_token  $3=agent_token
+  local etc="$1" admin="$2" agent="$3"
+  "$PYBIN" - "$etc" \
+    "$("$PYBIN" -c "import hashlib,sys;print(hashlib.sha256(sys.argv[1].encode()).hexdigest())" "$admin")" \
+    "$("$PYBIN" -c "import hashlib,sys;print(hashlib.sha256(sys.argv[1].encode()).hexdigest())" "$agent")" <<'PY'
+import json, os, sys
+etc, a, g = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(os.path.join(etc, "tokens.json"), "w", encoding="utf-8") as f:
+    json.dump({"admin_sha": a, "agent_sha": g, "updated_at": ""}, f, indent=2)
+PY
+  mkdir -p "$etc/secrets"
+  printf '%s\n' "$admin" > "$etc/secrets/admin-token"
+  printf '%s\n' "$agent" > "$etc/secrets/agent-token"
+  chmod 600 "$etc/tokens.json" "$etc/secrets/admin-token" "$etc/secrets/agent-token"
+}
+
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 say()  { echo -e "${BLUE}==>${NC} $*"; }
 ok()   { echo -e "${GREEN} [ok]${NC} $*"; }
@@ -102,20 +120,9 @@ if [ "$FRESH" = "1" ]; then
   TOKENS_SELF_GENERATED=1
   if [ -z "$ADMIN_TOKEN" ]; then ADMIN_TOKEN="adm_$(openssl rand -hex 24)"; else TOKENS_SELF_GENERATED=0; fi
   if [ -z "$AGENT_TOKEN" ]; then AGENT_TOKEN="aa_$(openssl rand -hex 24)"; else TOKENS_SELF_GENERATED=0; fi
-  ADMIN_SHA="$("$PYBIN" -c "import hashlib,sys;print(hashlib.sha256(sys.argv[1].encode()).hexdigest())" "$ADMIN_TOKEN")"
-  AGENT_SHA="$("$PYBIN" -c "import hashlib,sys;print(hashlib.sha256(sys.argv[1].encode()).hexdigest())" "$AGENT_TOKEN")"
 
   # tokens.json (hashes only) + plaintext copies under secrets/ (root-only)
-  "$PYBIN" - "$ETC" "$ADMIN_SHA" "$AGENT_SHA" <<'PY'
-import json, os, sys
-etc, a, g = sys.argv[1], sys.argv[2], sys.argv[3]
-with open(os.path.join(etc, "tokens.json"), "w", encoding="utf-8") as f:
-    json.dump({"admin_sha": a, "agent_sha": g, "updated_at": ""}, f, indent=2)
-PY
-  mkdir -p "$ETC/secrets"
-  printf '%s\n' "$ADMIN_TOKEN" > "$ETC/secrets/admin-token"
-  printf '%s\n' "$AGENT_TOKEN" > "$ETC/secrets/agent-token"
-  chmod 600 "$ETC/tokens.json" "$ETC/secrets/admin-token" "$ETC/secrets/agent-token"
+  write_tokens "$ETC" "$ADMIN_TOKEN" "$AGENT_TOKEN"
 
   # TLS: self-signed cert (10 years) with SAN for IP + hostname
   mkdir -p "$ETC/tls"
@@ -150,6 +157,24 @@ else
         -keyout "$ETC/tls/key.pem" -out "$ETC/tls/cert.pem" </dev/null >/dev/null 2>&1
     chmod 600 "$ETC/tls/key.pem"; chmod 644 "$ETC/tls/cert.pem"
     warn "TLS certs were missing — regenerated."
+  fi
+
+  # v0.5.2 — ownership transfer on re-provision (documented contract of
+  # Parastoo Mobile: «رمز روت = مالکیت»). With ACCESS_AGENT_RESET_TOKENS=1 the
+  # provisioning client REPLACES both tokens with the ones it generated
+  # on-device; previous tokens die, nothing is ever printed. Refused without
+  # env tokens so a half-sent env can never lock the owner out.
+  TOKENS_RESET=0
+  if [ "${ACCESS_AGENT_RESET_TOKENS:-}" = "1" ]; then
+    RT_ADMIN="${ACCESS_AGENT_ADMIN_TOKEN:-}"
+    RT_AGENT="${ACCESS_AGENT_AGENT_TOKEN:-}"
+    if [ -n "$RT_ADMIN" ] && [ -n "$RT_AGENT" ]; then
+      write_tokens "$ETC" "$RT_ADMIN" "$RT_AGENT"
+      TOKENS_RESET=1
+      ok "Tokens REPLACED by provisioning client (ownership transfer) — never printed."
+    else
+      warn "RESET_TOKENS=1 but env tokens missing — keeping existing tokens (lockout avoided)."
+    fi
   fi
 fi
 
@@ -263,7 +288,11 @@ REPORT="$ETC/install-report.txt"
     fi
     echo "  -> v0.2: real <=1h GitHub tokens via GitHub App — see:  sudo access-agent set-github-app"
   else
-    echo "  -> upgrade: tokens/certs/PAT kept unchanged."
+    if [ "${TOKENS_RESET:-0}" = "1" ]; then
+      echo "  -> upgrade: certs/PAT kept unchanged; TOKENS REPLACED (ownership transfer)."
+    else
+      echo "  -> upgrade: tokens/certs/PAT kept unchanged."
+    fi
     echo "  -> tokens live in $ETC/secrets/ (root-only)."
   fi
   echo "COMMIT:          ${COMMIT:-unknown}"

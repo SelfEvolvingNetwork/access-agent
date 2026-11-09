@@ -24,6 +24,50 @@ jobs:
           bash -n install.sh
           bash -n uninstall.sh
           bash -n deploy/access-agent-cli.sh
+          bash -n scripts/pack-release.sh
 
       - name: تست دودی (سرور واقعی روی پورت آزاد، بدون TLS در تست)
         run: python tests/smoke_test.py
+
+  # کانال انتشار پل — الگوی همان کاری که اپ موبایل دارد: هر پوش به main یک
+  # رلیز با تگ متحرک bridge-r<N> می‌سازد؛ اپ همین را برای «نصب مستقیم پل از
+  # گیت‌هاب» می‌خواند. صحت دو-کاناله: فایل از رلیز، sha256 از مانیفست رلیز و
+  # RELEASE_MANIFEST.json روی main (کانال مستقل). قرارداد کامل:
+  # docs/AGENT_PROTOCOL.fa.md §۸.
+  release:
+    needs: checks
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: بسته‌بندی باندل + مانیفست
+        run: bash scripts/pack-release.sh out
+
+      - name: انتشار رلیز (تگ bridge-r<run_number>)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER=$(python3 -c "import json;print(json.load(open('out/manifest.json'))['version'])")
+          SHA=$(python3 -c "import json;print(json.load(open('out/manifest.json'))['sha256'])")
+          F=$(python3 -c "import json;print(json.load(open('out/manifest.json'))['filename'])")
+          TAG="bridge-r${{ github.run_number }}"
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "access-agent v$VER (build $TAG)" \
+            --notes "Automated CI build of commit ${GITHUB_SHA:0:7}. bundle sha256: $SHA. Parastoo Mobile installs/updates the bridge from this channel." \
+            "out/$F#$F" "out/$F.sha256#$F.sha256" "out/manifest.json#manifest.json"
+
+      - name: به‌روزرسانی RELEASE_MANIFEST.json روی main (کانال دوم صحت)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CONTENT=$(base64 -w0 out/manifest.json)
+          EXISTING_SHA=$(gh api "repos/$GITHUB_REPOSITORY/contents/RELEASE_MANIFEST.json" --jq '.sha' 2>/dev/null || true)
+          ARGS=(repos/$GITHUB_REPOSITORY/contents/RELEASE_MANIFEST.json \
+                -f message="[skip ci] release manifest bridge-r${{ github.run_number }}" \
+                -f content="$CONTENT" -f branch=main)
+          [ -n "$EXISTING_SHA" ] && ARGS+=(-f sha="$EXISTING_SHA")
+          gh api -X PUT "${ARGS[@]}" --jq '.commit.sha'

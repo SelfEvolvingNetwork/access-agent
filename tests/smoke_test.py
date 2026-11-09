@@ -143,6 +143,18 @@ def run_all() -> None:
         ("version", "uptime_s", "hostname", "kernel", "disk_percent", "docker_path")))
     ch("status parastoo_install_path کلید دارد", "parastoo_install_path" in b)
 
+    # ---------- installer contract (file-level tripwires) ----------
+    # قراردادهای نصب‌کننده که اپ موبایل به آن‌ها تکیه دارد — اگر کسی کد را دور
+    # بزند/حذف کند، اسموک همین‌جا قرمز می‌شود (الگوی «چک قرارداد» پرستو).
+    inst = (REPO / "install.sh").read_text(encoding="utf-8")
+    ch("install.sh: write_tokens واحد برای مسیر تازه و ریست", "write_tokens() {" in inst)
+    ch("install.sh: قرارداد RESET_TOKENS (انتقال مالکیت اپ)",
+       "ACCESS_AGENT_RESET_TOKENS" in inst and "Tokens REPLACED" in inst)
+    ch("install.sh: ریست بدون توکن env رد می‌شود (قفل‌شدن مالک ممنوع)",
+       "keeping existing tokens" in inst)
+    ch("install.sh: مسیر ارتقا گزارش TOKENS REPLACED دارد",
+       "TOKENS REPLACED (ownership transfer)" in inst)
+
     # ---------- exec ----------
     code, b = req("POST", "/api/exec", token=AGENT, body={"cmd": "echo hello-agent"})
     ch("exec ساده", code == 200 and b.get("exit_code") == 0
