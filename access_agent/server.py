@@ -55,27 +55,7 @@ Endpoints (v0.5):
                                                lets the app evolve without
                                                reinstalling the APK
 
-  GET  /chat                       public      chat web page (data needs the
-                                                revocable chat token — the admin
-                                                token never reaches the browser)
-  POST /api/chat/auth              chat        exchange chat token for an
-                                                HttpOnly cookie (web page)
-  GET  /api/chat/messages          chat|admin  history (?since_id= & ?limit=)
-  POST /api/chat/send              chat|admin  owner message (text ≤4000)
-  POST /api/chat/read              chat|admin  mark agent messages read
-  GET  /api/chat/stream            chat|admin  SSE live chat (JSONL mirror)
-  GET  /api/admin/chat/messages    admin       history (admin realm)
-  POST /api/admin/chat/send        admin       owner message (admin realm)
-  POST /api/admin/chat/read        admin       mark agent messages read
-  GET  /api/admin/chat/stream      admin       SSE live chat
-  GET  /api/admin/chat/export      admin       full JSONL export (anti lock-in)
-  GET  /api/admin/chat/token       admin       chat token metadata (no value)
-  GET  /api/admin/chat/token/show  admin       show current chat token (audited)
-  POST /api/admin/chat/token/rotate admin      new chat token (printed once)
-  GET  /api/agent/chat/poll        agent       new host messages + mark read
-  POST /api/agent/chat/reply       agent       agent message (text ≤4000)
-
-Auth: Authorization: Bearer <token> — three realms (admin, agent, chat); admin is a
+Auth: Authorization: Bearer <token> — two realms (admin, agent); admin is a
 superset. Tokens stored as SHA-256 hashes in ACCESS_AGENT_HOME/tokens.json.
 """
 from __future__ import annotations
@@ -92,7 +72,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import VERSION
-from . import appcore, bridgeuninstall, chatroom, githubapp, parastoolifecycle
+from . import appcore, bridgeuninstall, githubapp, parastoolifecycle
 from .execbridge import run_exec
 from .githubbroker import disclose, grants_tail, save_token, stored_token
 from .handoff import build_block
@@ -116,28 +96,13 @@ POST_ONLY = {
     "/api/admin/parastoo/reinstall",
     "/api/admin/parastoo/update",
     "/api/admin/bridge/uninstall",
-    # v0.6.0 — chat room (owner↔agent; docs/CHAT_ROOM.fa.md)
-    "/api/admin/chat/send",
-    "/api/admin/chat/read",
-    "/api/admin/chat/token/rotate",
-    "/api/chat/send",
-    "/api/chat/read",
-    "/api/chat/auth",
-    "/api/agent/chat/reply",
 }
 GET_ONLY = {"/", "/healthz", "/api/status", "/api/admin/audit",
             "/api/admin/audit/stream", "/api/admin/sessions",
             "/api/admin/agent-token", "/api/admin/handoff",
             "/api/admin/parastoo/lifecycle-status",
             "/api/admin/parastoo/setup-token",
-            "/api/admin/app/core-config",
-    # v0.6.0 — chat room
-    "/chat", "/chat/",
-    "/api/admin/chat/messages", "/api/admin/chat/stream",
-    "/api/admin/chat/token", "/api/admin/chat/token/show",
-    "/api/admin/chat/export",
-    "/api/chat/messages", "/api/chat/stream",
-    "/api/agent/chat/poll"}
+            "/api/admin/app/core-config"}
 
 
 # ---------- helpers ----------
@@ -309,10 +274,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "service": "access-agent", "version": VERSION,
                                     "detail": "independent AI-agent bridge; see /healthz and /api/status",
                                     "agent_connected": bool(self._role())})
-        # v0.6.0 — chat room paths dispatch first: /chat is public and the
-        # chat/agent chat endpoints guard themselves inside chatroom.
-        if path in chatroom.GET_PATHS:
-            return chatroom.handle_get(self, path)
         role = self._guard("agent")
         if not role:
             return
@@ -393,8 +354,6 @@ class Handler(BaseHTTPRequestHandler):
                   {"revision": snap.get("revision"), "source": snap.get("source")},
                   self._peer_ip())
             return self._send(200, snap)
-        if path in chatroom.GET_PATHS:
-            return chatroom.handle_get(self, path)
         self._send(404, {"ok": False, "error": "not_found", "path": path})
 
     # ---- POST ----
@@ -543,9 +502,6 @@ class Handler(BaseHTTPRequestHandler):
                       {"error": res.get("error")}, self._peer_ip())
                 return self._send(res.get("status", 400), res)
             return self._send(202, res)
-
-        if path in chatroom.POST_PATHS:
-            return chatroom.handle_post(self, path, data)
 
         self._send(404, {"ok": False, "error": "not_found", "path": path})
 
