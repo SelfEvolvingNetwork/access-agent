@@ -184,6 +184,15 @@ rm -rf "$OPT/access_agent"
 cp -r "$SRC_DIR/access_agent" "$OPT/access_agent"
 rm -rf "$OPT/access_agent/__pycache__"
 find "$OPT/access_agent" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+# v0.5.7 (owner decree 2026-11-09: «پرستو موبایل دستور پاک کردن پل را می‌دهد»):
+# the bridge must be able to remove ITSELF offline — keep the official
+# uninstaller inside the install tree so the self-purge never depends on
+# GitHub reachability at the moment of destruction.
+if [ -f "$SRC_DIR/uninstall.sh" ]; then
+  cp -f "$SRC_DIR/uninstall.sh" "$OPT/uninstall.sh"
+else
+  warn "uninstall.sh missing from source — bridge self-purge will fall back to fetching it"
+fi
 if [ -f "$SRC_DIR/deploy/access-agent-cli.sh" ]; then
   mkdir -p "$(dirname "$CLI_BIN")"   # v0.2.1: destination dir may not exist yet
   cp "$SRC_DIR/deploy/access-agent-cli.sh" "$CLI_BIN"

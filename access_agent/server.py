@@ -40,6 +40,12 @@ Endpoints (v0.5):
   POST /api/admin/parastoo/update      admin  run auto-update.sh --force now
                                                (v0.5: one operation at a time;
                                                background thread + log file)
+  POST /api/admin/bridge/uninstall     admin  v0.5.7 — the bridge removes ITSELF
+                                               (code+secrets+tokens+TLS+audit;
+                                               requires {"confirm": "uninstall"};
+                                               survives its own stop via a
+                                               systemd-run transient unit; every
+                                               remote access dies — intended)
 
 Auth: Authorization: Bearer <token> — two realms (admin, agent); admin is a
 superset. Tokens stored as SHA-256 hashes in ACCESS_AGENT_HOME/tokens.json.
@@ -58,7 +64,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import VERSION
-from . import githubapp, parastoolifecycle
+from . import bridgeuninstall, githubapp, parastoolifecycle
 from .execbridge import run_exec
 from .githubbroker import disclose, grants_tail, save_token, stored_token
 from .handoff import build_block
@@ -81,6 +87,7 @@ POST_ONLY = {
     "/api/admin/parastoo/uninstall",
     "/api/admin/parastoo/reinstall",
     "/api/admin/parastoo/update",
+    "/api/admin/bridge/uninstall",
 }
 GET_ONLY = {"/", "/healthz", "/api/status", "/api/admin/audit",
             "/api/admin/audit/stream", "/api/admin/sessions",
@@ -458,6 +465,19 @@ class Handler(BaseHTTPRequestHandler):
             if not res.get("ok"):
                 audit(role, "admin_parastoo_rejected",
                       {"action": action, "error": res.get("error")}, self._peer_ip())
+                return self._send(res.get("status", 400), res)
+            return self._send(202, res)
+
+        # v0.5.7 — آخرین فرمان: پل خودش را حذف می‌کند (نقطهٔ صفر مطلق؛ فرمان مالک).
+        # فقط ادمین؛ قلمرو عامل هرگز حق حذف پل را ندارد.
+        if path == "/api/admin/bridge/uninstall":
+            role = self._guard("admin")
+            if not role:
+                return
+            res = bridgeuninstall.schedule(str(data.get("confirm") or ""))
+            if not res.get("ok"):
+                audit(role, "admin_bridge_uninstall_refused",
+                      {"error": res.get("error")}, self._peer_ip())
                 return self._send(res.get("status", 400), res)
             return self._send(202, res)
 

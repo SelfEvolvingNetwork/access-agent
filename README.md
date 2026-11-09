@@ -92,6 +92,7 @@ sudo access-agent handoff
 | `POST /api/admin/rotate-agent-token` | admin | توکن عامل جدید (قدیمی می‌میرد؛ v0.3: برچسب اختیاری در متادیتا) |
 | `POST /api/admin/revoke-agent-token` | admin | قطع قلمرو عامل |
 | `POST /api/admin/set-github-token` | admin | ذخیره/تعویض پات مالک |
+| `POST /api/admin/bridge/uninstall` | admin | **v0.5.7 — پاک کردن خود پل** (آخرین فرمان نقطهٔ صفر؛ `{"confirm": "uninstall"}`): کد، راز‌ها، توکن‌ها، گواهی و audit پل برای همیشه حذف می‌شوند؛ همهٔ دسترسی راه‌دوری می‌میرد — عمدی. اجرا با واحد گذرای systemd تا از توقف سرویس جان سالم به‌در بَرد. قرارداد کامل: `docs/AGENT_PROTOCOL.fa.md` §۵.۷ |
 
 ## پرستو موبایل (v0.3 — ادمین در جیب)
 
