@@ -249,6 +249,12 @@ def run_all() -> None:
     joined = "\n".join(b.get("log_tail", []))
     ch("حذف کامل: uninstall.sh با پاس y/y اجرا شد", "answers: y" in joined and "removed" in joined)
     ch("حذف کامل: پوشهٔ نصب پاک شد (installed=false)", b.get("installed") is False)
+    # v0.5.6 — لاگ حاوی رمزهای تولیدی نصب است؛ فایل باید 600 باشد نه 644
+    try:
+        _mode = Path(b.get("log_file", "")).stat().st_mode & 0o777
+    except Exception:
+        _mode = None
+    ch("لاگ lifecycle با دسترسی 600 ساخته می‌شود (بازرسی v0.5.6)", _mode == 0o600)
 
     # ---------- نقطهٔ صفر (فرمان مالک 2026-11-09) ----------
     ch("حذف کامل: نشانگر «point zero reached» در لاگ است",
@@ -277,6 +283,8 @@ def run_all() -> None:
         ch(f"اسکریپت حذف: شامل {frag}", frag in unin)
     ch("اسکریپت حذف: دارایی‌های خود پل دست‌نخورده می‌مانند",
        "/etc/access-agent" in unin)
+    ch("اسکریپت حذف: خانوادهٔ /tmp/parastoo-* کامل پاک می‌شود (v0.5.6)",
+       "rm -rf /tmp/parastoo-*" in unin)
 
     # ---------- reinstall (uninstall + install in one lock) ----------
     code, b = req("POST", "/api/admin/parastoo/reinstall", ADMIN, {"confirm": "reinstall"})

@@ -219,6 +219,12 @@ def setup_token_info() -> dict:
 def _log_dir() -> Path:
     d = home() / "parastoo-lifecycle"
     d.mkdir(parents=True, exist_ok=True)
+    # v0.5.6: the contract says "root-only directory" — enforce it on disk too
+    # (field: the dir landed 0755 while ACCESS_AGENT_HOME is 0700).
+    try:
+        d.chmod(0o700)
+    except Exception:
+        pass
     return d
 
 
@@ -343,6 +349,12 @@ fi
 __SUDO__rm -rf "$APP_DIR" /var/lib/parastoo
 __SUDO__rm -f /etc/parastoo-domain /etc/parastoo-install-path \
   /tmp/parastoo-bootstrap.sh /tmp/get-docker.sh /tmp/parastoo-autoupdate.lock
+# v0.5.6 (field 2026-11-09): mktemp companions carry unpredictable suffixes —
+# a bare /tmp/parastoo-bootstrap.sh sweep left /tmp/parastoo-bootstrap.HoiCWs
+# and /tmp/parastoo-setup.wrc4WB behind on the live host. No trace means no
+# trace: sweep the whole /tmp/parastoo-* family. An unmatched glob is
+# tolerated by rm -rf (literal nonexistent path with -f succeeds).
+__SUDO__rm -rf /tmp/parastoo-*
 
 # 5) systemd leftovers (idempotent — uninstall.sh already did this when the tree existed)
 __SUDO__rm -f /etc/systemd/system/parastoo-*.service /etc/systemd/system/parastoo-*.timer
@@ -391,6 +403,12 @@ def _worker(action: str, script: str, log_file: Path) -> None:
     exit_code = -1
     timed_out = False
     try:
+        # v0.5.6: installer output may contain generated credentials (setup
+        # token, gitea admin password) — the log file is 0600, never 0644.
+        try:
+            log_file.touch(mode=0o600)
+        except Exception:
+            pass
         with log_file.open("w", encoding="utf-8") as lf:
             proc = subprocess.Popen(
                 ["bash", "-c", script],
