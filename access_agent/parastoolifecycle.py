@@ -118,7 +118,8 @@ def version() -> str:
 
 # ---------- setup-wizard token (v0.5.3, parastoo-mobile) ----------
 
-_ENV_KEYS = ("PARASTOO_SETUP_TOKEN", "BASE_DOMAIN", "TLS_ENABLED", "ACME_EMAIL")
+_ENV_KEYS = ("PARASTOO_SETUP_TOKEN", "BASE_DOMAIN", "TLS_ENABLED", "ACME_EMAIL",
+             "TRAEFIK_TLS")
 
 
 def _read_env(path: Path) -> dict:
@@ -138,13 +139,31 @@ def _read_env(path: Path) -> dict:
     return out
 
 
+def _acme_from_traefik(install: str) -> str:
+    """ایمیل زندهٔ ACME از config/traefik.yml — render_static با هر apply
+    دامنه آن را می‌نویسد؛ منبع زندهٔ درست (میدان 2026-11-09: ACME_EMAIL در
+    .env می‌توانست از زمان نصب کهنه بماند)."""
+    try:
+        txt = (Path(install) / "config" / "traefik.yml").read_text(
+            encoding="utf-8", errors="replace")
+        m = re.search(r'\bemail:\s*["\']?([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+)', txt)
+        return m.group(1) if m else ""
+    except Exception:
+        return ""
+
+
 def setup_token_info() -> dict:
     """Facts the owner's phone needs to finish the panel setup wizard WITHOUT
     ssh (owner directive 2026-11-09: «توکن نصب باید در پرستو موبایل نمایش
     داده شود»): the PARASTOO_SETUP_TOKEN plus domain/TLS context so the app
     can offer a one-tap link to the wizard. admin realm only (guard in
     server.py); the token value NEVER reaches log or audit — the audit event
-    carries the has_token boolean only, same contract as github.env."""
+    carries the has_token boolean only, same contract as github.env.
+
+    v0.5.4 (field 2026-11-09): TLS/ACME prefer the LIVE writer fields —
+    TRAEFIK_TLS (sync_host_env refreshes it on every apply) and the acme
+    email rendered inside config/traefik.yml — falling back to the
+    install-era TLS_ENABLED/ACME_EMAIL lines which can go stale."""
     installed_ok = installed()
     p = install_path()
     if not installed_ok or not p:
@@ -155,7 +174,13 @@ def setup_token_info() -> dict:
     env = _read_env(Path(p) / ".env")
     token = env.get("PARASTOO_SETUP_TOKEN", "")
     domain = env.get("BASE_DOMAIN", "")
-    tls = env.get("TLS_ENABLED", "").strip().lower() == "true"
+    fresh = env.get("TRAEFIK_TLS", "").strip().lower()
+    legacy = env.get("TLS_ENABLED", "").strip().lower()
+    if fresh in ("true", "false"):
+        tls = fresh == "true"
+    else:
+        tls = legacy == "true"
+    acme = _acme_from_traefik(p) or env.get("ACME_EMAIL", "")
     scheme = "https" if tls else "http"
     panel = f"{scheme}://panel.{domain}" if domain else ""
     return {
@@ -165,7 +190,7 @@ def setup_token_info() -> dict:
         "setup_token": token,
         "base_domain": domain,
         "tls_enabled": tls,
-        "acme_email": env.get("ACME_EMAIL", ""),
+        "acme_email": acme,
         "panel_url": panel,
         "setup_url": f"{panel}/setup" if panel else "",
         "parastoo_version": version(),

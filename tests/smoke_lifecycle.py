@@ -259,24 +259,42 @@ def run_all() -> None:
     ch("نصب مجدد: هر دو فاز در یک لاگ", "phase 1/2" in joined and "phase 2/2" in joined)
     ch("نصب مجدد: در پایان نصب است", b.get("installed") is True)
 
-    # ---------- setup-token (v0.5.3) — installed tree with a real .env ----------
+    # ---------- setup-token (v0.5.3/0.5.4) — installed tree with a real .env ----------
     TOKEN = "abcd-efgh-ijkl"
+    (FAKE / "config").mkdir(exist_ok=True)
+    (FAKE / "config" / "traefik.yml").write_text(
+        'le:\n  email: "le@live-traefik.tld"\n', encoding="utf-8")
     (FAKE / ".env").write_text(
         "# parastoo env\n"
         f"PARASTOO_SETUP_TOKEN={TOKEN}\n"
         "BASE_DOMAIN=example.tld\n"
-        "TLS_ENABLED=true\n"
-        "ACME_EMAIL=admin@example.tld\n"
+        # میدان 2026-11-09: کلیدهای میراثِ نصب می‌توانند کهنه بمانند —
+        # زندهٔ اول: TRAEFIK_TLS + ایمیل داخل traefik.yml
+        "TLS_ENABLED=false\n"
+        "TRAEFIK_TLS=true\n"
+        "ACME_EMAIL=admin@stale-env.tld\n"
         "SETUP_TOKEN=should-not-be-read\n",
         encoding="utf-8")
     code, b = req("GET", "/api/admin/parastoo/setup-token", ADMIN)
-    ch("setup-token روی نصب قلابی: توکن/دامنه/TLS درست خوانده شد",
+    ch("setup-token: زنده بر میراث مقدم است (TRAEFIK_TLS=true بر TLS_ENABLED=false، ایمیل از traefik.yml)",
        code == 200 and b.get("installed") is True and b.get("has_token") is True
        and b.get("setup_token") == TOKEN and b.get("base_domain") == "example.tld"
        and b.get("tls_enabled") is True
+       and b.get("acme_email") == "le@live-traefik.tld"
        and b.get("panel_url") == "https://panel.example.tld"
        and b.get("setup_url") == "https://panel.example.tld/setup"
        and b.get("parastoo_version") == "0.9.9-test")
+    # فالبک نصب‌های کهنه: بدون TRAEFIK_TLS و بدون traefik.yml → TLS_ENABLED/ACME_EMAIL
+    (FAKE / "config" / "traefik.yml").unlink()
+    (FAKE / ".env").write_text(
+        f"PARASTOO_SETUP_TOKEN={TOKEN}\nBASE_DOMAIN=example.tld\n"
+        "TLS_ENABLED=true\nACME_EMAIL=admin@example.tld\n",
+        encoding="utf-8")
+    code, b = req("GET", "/api/admin/parastoo/setup-token", ADMIN)
+    ch("setup-token: فالبک میراث (بدون فیلد زنده) درست کار می‌کند",
+       code == 200 and b.get("tls_enabled") is True
+       and b.get("acme_email") == "admin@example.tld"
+       and b.get("setup_url") == "https://panel.example.tld/setup")
     code, b = req("GET", "/api/admin/audit?tail=200", ADMIN)
     blob = "\n".join(b.get("lines", []))
     ch("audit: رویداد setup-token فقط بولین دارد — خودِ توکن هرگز در audit نیست",
