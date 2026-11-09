@@ -254,6 +254,10 @@ def run_all() -> None:
     code, b = req("POST", "/api/github/token", token=ADMIN,
                   body={"purpose": "admin can also disclose"})
     ch("ادمین هم می‌تواند افشا کند", code == 200 and b.get("ok") is True)
+    # فرمان مالک (2026-11-09): مسیر موبایل — بعد از set، وضعیت باید فلیپ کند
+    code, b = req("GET", "/api/status", token=ADMIN)
+    ch("status بعد از set: github_token_stored=true", code == 200
+       and b.get("github_token_stored") is True)
 
     # ---------- audit ----------
     code, b = req("GET", "/api/admin/audit?tail=50", token=ADMIN)

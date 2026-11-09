@@ -101,6 +101,7 @@ curl -sk -H "Authorization: Bearer $ACCESS_AGENT_AGENT_TOKEN" \
 | `GET /api/admin/handoff` | بلوک تحویل آمادهٔ کپی برای عامل (همان خروجی `sudo access-agent handoff`)؛ اگر دادهٔ کامل نباشد `409 handoff_unavailable` |
 | `POST /api/admin/agent-realm/pause` | **کلید توقف** — بدنهٔ `{"paused": true, "reason": "..."}`؛ در `state.json` ماندگار است (ریستارت هم می‌ماند). در حالت توقف، درخواست‌های قلمرو عامل به `/api/exec` و `/api/github/token` و `/api/status` → `403 agent_realm_paused`؛ ادمین همیشه آزاد؛ `healthz` عمومی دست‌نخورده |
 | `POST /api/admin/rotate-agent-token` | v0.3: بدنهٔ اختیاری `{"label": "..."}` (≤۸۰ کاراکتر) در متادیتا ثبت می‌شود |
+| `POST /api/admin/set-github-token` | **ذخیرهٔ پات مالک — «یک‌جای مناسب سرور»** (v0.2؛ از اپ 0.4.6 موبایل این مسیر رسمیِ تنظیم است): بدنهٔ `{"token": "..."}` → نوشتن در `github.env` با دسترسی ۶۰۰ (خارج از هر درخت git)، اعتبارسنجی بهترین‌تلاشی با `api.github.com/user` (آفلاین هم ذخیره می‌شود)، ثبت در audit بدون خودِ توکن. تعویض = همان مسیر؛ حذف = SSH (`rm $ACCESS_AGENT_HOME/github.env`). پرستو موبایل این را در جادوگر فراهم‌سازی (اختیاری) و در داشبورد (کارت «توکن گیت‌هاب برای عامل») ارائه می‌دهد؛ توکن روی گوشی ذخیره نمی‌شود |
 
 **غنی‌سازی رکورد exec در audit (v0.3):** علاوه بر فیلدهای قبلی، `cmd_preview` (۴۰۰ کاراکتر)، `stdout_preview` (۶۰۰)، `stderr_preview` (۳۰۰) و `duration_ms` ثبت می‌شود — مانیتور زندهٔ موبایل فقط از این رکوردها تغذیه می‌کند؛ **عامل هیچ گزارش اضافه‌ای تولید نمی‌کند و هیچ باری نمی‌بیند.**
 
