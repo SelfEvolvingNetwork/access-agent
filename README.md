@@ -93,6 +93,7 @@ sudo access-agent handoff
 | `POST /api/admin/revoke-agent-token` | admin | قطع قلمرو عامل |
 | `POST /api/admin/set-github-token` | admin | ذخیره/تعویض پات مالک |
 | `POST /api/admin/bridge/uninstall` | admin | **v0.5.7 — پاک کردن خود پل** (آخرین فرمان نقطهٔ صفر؛ `{"confirm": "uninstall"}`): کد، راز‌ها، توکن‌ها، گواهی و audit پل برای همیشه حذف می‌شوند؛ همهٔ دسترسی راه‌دوری می‌میرد — عمدی. اجرا با واحد گذرای systemd تا از توقف سرویس جان سالم به‌در بَرد. قرارداد کامل: `docs/AGENT_PROTOCOL.fa.md` §۵.۷ |
+| `GET /api/admin/app/core-config` | admin | **v0.5.8 — هستهٔ هات اپ موبایل**: پاکت داده نسخه‌دار (نقشهٔ endpointها + متن‌های مجاز + فلگ‌ها) که اپ 0.4.12+ بدون نصب مجدد APK واکشی و اعمال می‌کند. فقط داده (هرگز کد)، پوشش sha256، اورراید سروری در `ACCESS_AGENT_HOME/app-core/core.json` با فالبک امن به پیش‌فرض. قرارداد کامل: `docs/AGENT_PROTOCOL.fa.md` §۵.۸ |
 
 ## پرستو موبایل (v0.3 — ادمین در جیب)
 

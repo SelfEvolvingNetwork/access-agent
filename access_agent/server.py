@@ -46,6 +46,14 @@ Endpoints (v0.5):
                                                survives its own stop via a
                                                systemd-run transient unit; every
                                                remote access dies — intended)
+  GET  /api/admin/app/core-config      admin  v0.5.8 — the mobile app's HOT DATA
+                                               CORE: versioned {endpoints, allowed
+                                               strings, flags} envelope; data only
+                                               (never code), sha256-covered,
+                                               optional override file at
+                                               ACCESS_AGENT_HOME/app-core/core.json;
+                                               lets the app evolve without
+                                               reinstalling the APK
 
 Auth: Authorization: Bearer <token> — two realms (admin, agent); admin is a
 superset. Tokens stored as SHA-256 hashes in ACCESS_AGENT_HOME/tokens.json.
@@ -64,7 +72,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import VERSION
-from . import bridgeuninstall, githubapp, parastoolifecycle
+from . import appcore, bridgeuninstall, githubapp, parastoolifecycle
 from .execbridge import run_exec
 from .githubbroker import disclose, grants_tail, save_token, stored_token
 from .handoff import build_block
@@ -93,7 +101,8 @@ GET_ONLY = {"/", "/healthz", "/api/status", "/api/admin/audit",
             "/api/admin/audit/stream", "/api/admin/sessions",
             "/api/admin/agent-token", "/api/admin/handoff",
             "/api/admin/parastoo/lifecycle-status",
-            "/api/admin/parastoo/setup-token"}
+            "/api/admin/parastoo/setup-token",
+            "/api/admin/app/core-config"}
 
 
 # ---------- helpers ----------
@@ -332,6 +341,19 @@ class Handler(BaseHTTPRequestHandler):
                    "has_token": bool(info.get("has_token"))},
                   self._peer_ip())
             return self._send(200, info)
+        # v0.5.8 — هستهٔ داده‌محور اپ موبایل: فقط ادمین؛ در audit فقط revision و
+        # منبع ثبت می‌شود، نه محتوای پاکت. داده است، نه کد — اپ با اعتبارسنجی
+        # سخت‌گیرانه و allowlist خودش می‌خواند؛ endpoint آدرس سرور را هرگز عوض
+        # نمی‌کند — این کانال است که آدرس را می‌آورد.
+        if path == "/api/admin/app/core-config":
+            role = self._guard("admin")
+            if not role:
+                return
+            snap = appcore.snapshot()
+            audit(role, "admin_app_core_config",
+                  {"revision": snap.get("revision"), "source": snap.get("source")},
+                  self._peer_ip())
+            return self._send(200, snap)
         self._send(404, {"ok": False, "error": "not_found", "path": path})
 
     # ---- POST ----
