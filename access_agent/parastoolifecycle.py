@@ -16,11 +16,25 @@ Rules (non-negotiable):
   docs/LESSONS.md, field 2026-11-08) is structurally closed.
 - Operations run in a background thread; output appends to a log file under
   ACCESS_AGENT_HOME/parastoo-lifecycle/ (root-only directory, chmod 600).
-- "Full uninstall" = uninstall.sh answered y/y (drop projects/volumes) PLUS
-  removal of the install folder and /var/lib/parastoo — explicitly ordered by
-  the owner («حذف و پاکسازی کامل پرستو با تمام متعلقات»). The stock installer
-  would keep the TLS store; the owner's explicit full-cleanup order overrides
-  that, and the app dialog repeats the consequence before firing.
+- "Full uninstall" = POINT ZERO (owner decree 2026-11-09 «هیچ آثاری و گردی
+  باقی نماند»): uninstall.sh answered y/y (drop projects/volumes) PLUS removal
+  of every last trace — install folder, /var/lib/parastoo incl. the TLS store
+  (the stock installer would keep it; the owner's explicit full-cleanup order
+  overrides the certificate-store rule on this path), /etc/parastoo-domain,
+  /etc/parastoo-install-path, systemd units, /tmp leftovers, every parastoo
+  docker artifact (user-project + stack containers, networks, volumes,
+  images, build cache) and the installer-injected registry-mirrors in
+  /etc/docker/daemon.json (+ docker restart only when that changed).
+  The bridge itself and all of its assets (/etc/access-agent/**, audit,
+  tokens, github vault) are NEVER touched — the phone keeps its channel.
+  The final log line is "== point zero reached ==" and lifecycle-status
+  reports installed:false — that polling channel IS the notification to
+  Parastoo Mobile; the app renders the zero-point state and offers a fresh
+  install that behaves exactly like a first install on a clean OS.
+- Default install domain is ALWAYS zeolitecenter.ir (owner decree
+  2026-11-09): before every fresh install the bridge writes
+  /etc/parastoo-domain from DEFAULT_BASE_DOMAIN; install.sh picks it up
+  when no live .env exists (a live .env still wins per install.sh contract).
 - Destructive endpoints require {"confirm": "<action>"} exactly matching the
   action (defense in depth; the primary gate is the admin token itself).
 - Install goes through the official one-liner path only: download bootstrap.sh
@@ -52,6 +66,11 @@ BOOTSTRAP_URL = (
     "https://raw.githubusercontent.com/SelfEvolvingNetwork/parastoo/main/bootstrap.sh"
 )
 BOOTSTRAP_PROXY = f"https://gh-proxy.com/{BOOTSTRAP_URL}"
+
+# Owner decree 2026-11-09: the default install domain is always this one.
+# Written to /etc/parastoo-domain before every fresh install; parastoo's
+# install.sh restores it when no live .env exists (a live .env still wins).
+DEFAULT_BASE_DOMAIN = "zeolitecenter.ir"
 
 _state = {
     "busy": False, "action": "", "started_at": "", "finished_at": "",
@@ -234,7 +253,13 @@ def _install_script() -> str:
     if override:
         return override
     s = _sudo()
+    d = DEFAULT_BASE_DOMAIN
     return (
+        # owner decree 2026-11-09: default install domain is ALWAYS
+        # zeolitecenter.ir — install.sh reads this marker when no live .env
+        # exists and provisions zone + HTTPS itself (§6d of its contract).
+        f"echo {d} | {s}tee /etc/parastoo-domain >/dev/null"
+        f" || (echo 'cannot write default domain marker'; exit 1)\n"
         "rm -f /tmp/parastoo-bootstrap.sh\n"
         f"curl -fsSL {BOOTSTRAP_URL} -o /tmp/parastoo-bootstrap.sh"
         f" || curl -fsSL {BOOTSTRAP_PROXY} -o /tmp/parastoo-bootstrap.sh\n"
@@ -243,23 +268,95 @@ def _install_script() -> str:
     )
 
 
+_UNINSTALL_TMPL = r"""# ---- Parastoo point-zero uninstall — owner decree 2026-11-09 ----
+# NO trace and NO dust of the parastoo project may remain on this host.
+# The bridge and its own assets (/etc/access-agent/**, audit, tokens) stay
+# untouched — the phone keeps its channel. "Nothing to remove" is SUCCESS,
+# never an error (LESSONS): every sweep is guarded and idempotent.
+APP_DIR="$(cat __DIR_FILE__ 2>/dev/null || echo /opt/parastoo)"
+
+# 0) inventory of parastoo-only docker artifacts, before anything is removed
+PT_IMGS=""
+if command -v docker >/dev/null 2>&1; then
+  PT_IMGS="$(
+    { docker ps -aq --filter name=parastoo- 2>/dev/null || true;
+      docker ps -aq --filter label=parastoo.project 2>/dev/null || true; } \
+      | xargs -r docker inspect --format '{{.Image}}' 2>/dev/null || true)"
+  PT_IMGS="$PT_IMGS $(docker images -q --filter label=parastoo.slug 2>/dev/null || true)"
+  PT_IMGS="$PT_IMGS $(docker images -q parastoo/core:latest 2>/dev/null || true)"
+fi
+
+# 1) official uninstall (user projects + volumes, stack down -v, CLI, units)
+if [ -d "$APP_DIR" ]; then
+  cd "$APP_DIR"
+  printf 'y\ny\n' | __SUDO__bash uninstall.sh
+else
+  echo "parastoo dir already absent ($APP_DIR) — nothing to uninstall"
+fi
+
+# 2) residual docker sweeps (also cover an absent/pre-deleted install tree)
+if command -v docker >/dev/null 2>&1; then
+  { docker ps -aq --filter name=parastoo- 2>/dev/null || true;
+    docker ps -aq --filter label=parastoo.project 2>/dev/null || true; } \
+    | xargs -r docker rm -f 2>/dev/null || true
+  docker network ls -q --filter name=parastoo 2>/dev/null | xargs -r docker network rm -f 2>/dev/null || true
+  docker volume ls -q --filter name=parastoo 2>/dev/null | xargs -r docker volume rm -f 2>/dev/null || true
+  printf '%s\n' $PT_IMGS | sort -u | grep -v '^$' | xargs -r docker rmi -f 2>/dev/null || true
+  for repo in traefik gitea/gitea postgres powerdns/pdns-auth-49 alpine; do
+    docker images -q "$repo" 2>/dev/null | xargs -r docker rmi 2>/dev/null || true
+  done
+  docker image prune -f >/dev/null 2>&1 || true
+  docker builder prune -af >/dev/null 2>&1 || true
+fi
+
+# 3) /etc/docker/daemon.json — drop the installer-injected registry-mirrors;
+#    restart docker only when the file actually changed
+if command -v python3 >/dev/null 2>&1 && [ -f /etc/docker/daemon.json ]; then
+  CHANGED="$(__SUDO__python3 - <<'PYEOF'
+import json, os
+P = "/etc/docker/daemon.json"
+try:
+    cfg = json.load(open(P, encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+if isinstance(cfg, dict) and "registry-mirrors" in cfg:
+    cfg.pop("registry-mirrors", None)
+    try:
+        if cfg:
+            json.dump(cfg, open(P, "w", encoding="utf-8"), indent=2)
+        else:
+            os.remove(P)
+        print("daemon.json: parastoo registry-mirrors removed")
+    except Exception:
+        pass
+raise SystemExit(0)
+PYEOF
+)" || true
+  case "$CHANGED" in
+    *removed*)
+      __SUDO__systemctl restart docker >/dev/null 2>&1 \
+        || __SUDO__service docker restart >/dev/null 2>&1 || true ;;
+  esac
+fi
+
+# 4) host files — tree, persistent state (TLS store), domain identity, tmp leftovers
+__SUDO__rm -rf "$APP_DIR" /var/lib/parastoo
+__SUDO__rm -f /etc/parastoo-domain /etc/parastoo-install-path \
+  /tmp/parastoo-bootstrap.sh /tmp/get-docker.sh /tmp/parastoo-autoupdate.lock
+
+# 5) systemd leftovers (idempotent — uninstall.sh already did this when the tree existed)
+__SUDO__rm -f /etc/systemd/system/parastoo-*.service /etc/systemd/system/parastoo-*.timer
+__SUDO__systemctl daemon-reload >/dev/null 2>&1 || true
+
+echo '== point zero reached: no parastoo trace left on this host =='
+"""
+
+
 def _uninstall_script() -> str:
+    """نقطهٔ صفر — همهٔ بقایا، نه فقط uninstall.sh رسمی (فرمان مالک 2026-11-09)."""
     s = _sudo()
     df = str(_dir_file())
-    return (
-        f'APP_DIR="$(cat {df} 2>/dev/null || echo /opt/parastoo)"\n'
-        # LESSONS rule: "nothing to remove" is SUCCESS, not an error — a missing
-        # dir must never abort the cleanup before it finishes (field 2026-11-08).
-        f'if [ -d "$APP_DIR" ]; then\n'
-        f'  cd "$APP_DIR"\n'
-        f'  printf \'y\\ny\\n\' | {s}bash uninstall.sh\n'
-        "else\n"
-        '  echo "parastoo dir already absent ($APP_DIR) — nothing to uninstall"\n'
-        "fi\n"
-        # owner-ordered full cleanup: install folder + persistent TLS store
-        f"{s}rm -rf \"$APP_DIR\" /var/lib/parastoo /tmp/parastoo-bootstrap.sh\n"
-        "echo '== full cleanup done =='\n"
-    )
+    return _UNINSTALL_TMPL.replace("__SUDO__", s).replace("__DIR_FILE__", df)
 
 
 def _update_script() -> str:
@@ -278,7 +375,7 @@ def _script_for(action: str) -> str:
         return _uninstall_script()
     if action == "update":
         return _update_script()
-    # reinstall = full cleanup then fresh install (single log, single lock)
+    # reinstall = point-zero cleanup then fresh install (single log, single lock)
     return (
         "echo '== reinstall phase 1/2: full uninstall =='\n"
         + _uninstall_script()

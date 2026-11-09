@@ -250,6 +250,34 @@ def run_all() -> None:
     ch("حذف کامل: uninstall.sh با پاس y/y اجرا شد", "answers: y" in joined and "removed" in joined)
     ch("حذف کامل: پوشهٔ نصب پاک شد (installed=false)", b.get("installed") is False)
 
+    # ---------- نقطهٔ صفر (فرمان مالک 2026-11-09) ----------
+    ch("حذف کامل: نشانگر «point zero reached» در لاگ است",
+       "point zero reached" in joined)
+    sys.path.insert(0, str(REPO))
+    from access_agent import parastoolifecycle as pl
+    ch("دامنهٔ پیش‌فرض نصب = zeolitecenter.ir (فرمان مالک)",
+       pl.DEFAULT_BASE_DOMAIN == "zeolitecenter.ir")
+    _saved_cmd = os.environ.pop("ACCESS_AGENT_PARASTOO_BOOTSTRAP_CMD", None)
+    _saved_dir = os.environ.pop("ACCESS_AGENT_PARASTOO_DIR_FILE", None)
+    try:
+        inst = pl._install_script()
+        unin = pl._uninstall_script()
+    finally:
+        if _saved_cmd is not None:
+            os.environ["ACCESS_AGENT_PARASTOO_BOOTSTRAP_CMD"] = _saved_cmd
+        if _saved_dir is not None:
+            os.environ["ACCESS_AGENT_PARASTOO_DIR_FILE"] = _saved_dir
+    ch("اسکریپت نصب: نشانگر دامنهٔ پیش‌فرض را پیش از bootstrap می‌نویسد",
+       "/etc/parastoo-domain" in inst and "zeolitecenter.ir" in inst
+       and inst.index("/etc/parastoo-domain") < inst.index("bootstrap.sh"))
+    for frag in ("/var/lib/parastoo", "/etc/parastoo-domain",
+                 "/etc/parastoo-install-path", "registry-mirrors",
+                 "docker network ls", "docker volume ls", "docker rmi",
+                 "builder prune", "parastoo-*.service", "uninstall.sh"):
+        ch(f"اسکریپت حذف: شامل {frag}", frag in unin)
+    ch("اسکریپت حذف: دارایی‌های خود پل دست‌نخورده می‌مانند",
+       "/etc/access-agent" in unin)
+
     # ---------- reinstall (uninstall + install in one lock) ----------
     code, b = req("POST", "/api/admin/parastoo/reinstall", ADMIN, {"confirm": "reinstall"})
     ch("نصب مجدد پذیرفته شد (روی نصب‌نشده هم مجاز)", code == 202)
@@ -257,6 +285,8 @@ def run_all() -> None:
     joined = "\n".join(b.get("log_tail", []))
     ch("نصب مجدد: exit 0", b.get("exit_code") == 0)
     ch("نصب مجدد: هر دو فاز در یک لاگ", "phase 1/2" in joined and "phase 2/2" in joined)
+    ch("نصب مجدد: فاز ۱ نقطهٔ صفر (نشانگر دامنه در چک ترکیب اسکریپت نصب)",
+       "point zero reached" in joined)
     ch("نصب مجدد: در پایان نصب است", b.get("installed") is True)
 
     # ---------- setup-token (v0.5.3/0.5.4) — installed tree with a real .env ----------
