@@ -65,23 +65,52 @@ print(m.group(1) if m else "0.0.0")
 PY
 )"
 
+is_private_ip() {  # 10/8, 172.16/12, 192.168/16, 127/8, 169.254/16, 100.64/10 CGNAT, 0/8, reserved 224+/8
+  printf '%s' "${1:-}" | grep -qE '^(10\.|127\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|0\.|22[4-9]\.|2[3-5][0-9]\.)'
+}
+
+# v0.6.4 — IP detection rewrite. The v0.1.2 hotfix (c4ade68) switched detect_ip
+# to "first IPv4 of hostname -I"; on Docker-heavy hosts that grabs a bridge
+# gateway (e.g. 172.22.0.1) and records an unreachable ACCESS_URL in
+# config.json, the report card and the handoff block. New priority (every
+# probe runs in the host netns via hostns — the v0.1.2 container-netns intent
+# is preserved):
+#   1) source IP of the default route — `ip route get`, then the 8.8.8.8 UDP
+#      probe; the address egress traffic actually leaves from, immune to
+#      Docker bridges;
+#   2) first PUBLIC IPv4 from hostname -I (private/reserved ranges skipped);
+#   3) first IPv4 from hostname -I (private-only / NAT hosts — v0.1.2 behavior);
+#   4) 127.0.0.1 last resort.
 detect_ip() {
-  # v0.1.2: prefer the host netns (first IPv4 of hostname -I); UDP probe fallback.
-  IP="$(hostns hostname -I 2>/dev/null | awk '{print $1}')"
-  if [ -n "$IP" ]; then
-    echo "$IP"
-  else
-    "$PYBIN" - <<'PY'
+  local ip pub
+  ip="$(hostns ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9]\{1,3\}\(\.[0-9]\{1,3\}\)\{3\}\).*/\1/p' | head -n1 || true)"
+  if [ -n "$ip" ] && ! is_private_ip "$ip"; then
+    echo "$ip"; return
+  fi
+  ip="$("$PYBIN" - <<'PY' 2>/dev/null || true
 import socket
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 try:
     s.connect(("8.8.8.8", 80))
     print(s.getsockname()[0])
 except Exception:
-    print("127.0.0.1")
+    pass
 finally:
     s.close()
 PY
+)"
+  if [ -n "$ip" ] && ! is_private_ip "$ip"; then
+    echo "$ip"; return
+  fi
+  pub="$(hostns hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' | { grep -vE '^(10\.|127\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|0\.|22[4-9]\.|2[3-5][0-9]\.)' || true; } | head -n1 || true)"
+  if [ -n "$pub" ]; then
+    echo "$pub"; return
+  fi
+  ip="$(hostns hostname -I 2>/dev/null | awk '{print $1}')"
+  if [ -n "$ip" ]; then
+    echo "$ip"
+  else
+    echo "127.0.0.1"
   fi
 }
 pick_free_port() {

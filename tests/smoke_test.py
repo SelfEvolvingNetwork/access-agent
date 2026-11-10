@@ -11,6 +11,7 @@ import atexit
 import hashlib  # noqa: E402
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -154,6 +155,34 @@ def run_all() -> None:
        "keeping existing tokens" in inst)
     ch("install.sh: مسیر ارتقا گزارش TOKENS REPLACED دارد",
        "TOKENS REPLACED (ownership transfer)" in inst)
+
+    # ---------- v0.6.4: detect_ip — رگرسیون باگ IP داکری (172.22.0.1) ----------
+    # هات‌فیکس v0.1.2 (c4ade68) «اولین IP خروجی hostname -I» را اصلی کرد؛ روی
+    # هاست‌های داکری، آیتم اول گیت‌وی بریج (172.22.0.1) است و ACCESS_URL
+    # غیرقابل‌دسترس در config.json/کارت گزارش/handoff ثبت می‌شد. قرارداد تازه:
+    # پروب مسیر پیش‌فرض اول است و hostname -I فقط بعد از آن.
+    ch("install.sh: پروب مسیر پیش‌فرض قبل از hostname -I است",
+       0 <= inst.find("hostns ip -4 route get 1.1.1.1")
+       < inst.find("hostns hostname -I"))
+    ipm = re.search(r"^is_private_ip\(\) \{.*?^\}", inst, re.S | re.M)
+    ch("install.sh: تابع is_private_ip موجود است", ipm is not None)
+    if ipm:
+        ipfn = Path(TMP) / "is_private_ip.sh"
+        ipfn.write_text(ipm.group(0) + "\n", encoding="utf-8")
+
+        def _priv(ip_: str) -> bool:
+            r = subprocess.run(["bash", "-c", f"source '{ipfn}'; is_private_ip '{ip_}'"],
+                               capture_output=True)
+            return r.returncode == 0
+
+        ch("is_private_ip: گیت‌وی بریج داکر 172.22.0.1 → خصوصی",
+           _priv("172.22.0.1") and not _priv("172.15.255.255") and not _priv("172.32.0.1"))
+        ch("is_private_ip: 10/8 و 192.168/16 و 127/8 → خصوصی",
+           _priv("10.0.0.5") and _priv("192.168.1.1") and _priv("127.0.0.1"))
+        ch("is_private_ip: CGNAT 100.64–100.127 → خصوصی",
+           _priv("100.64.0.1") and _priv("100.127.255.3") and not _priv("100.128.0.1") and not _priv("100.63.255.255"))
+        ch("is_private_ip: IP عمومی → عمومی",
+           not _priv("193.151.142.128") and not _priv("8.8.8.8"))
 
     # ---------- exec ----------
     code, b = req("POST", "/api/exec", token=AGENT, body={"cmd": "echo hello-agent"})
