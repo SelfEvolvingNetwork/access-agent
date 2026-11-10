@@ -120,6 +120,9 @@ sudo access-agent rotate-admin-token     # توکن ادمین جدید؛ قدی
 sudo access-agent set-github-token ghp_xxx   # تعویض پات (اعتبارسنجی best-effort)
 sudo access-agent handoff                 # متن آمادهٔ تحویل به عامل هوش مصنوعی — v0.1.3
 sudo access-agent audit 30               # دم لاگ audit
+sudo access-agent autoupdate status      # وضعیت خودآپدیت سمت سرور — v0.6.3
+sudo access-agent autoupdate off         # خاموشی تایمر خودآپدیت (پیش‌فرض: روشن هر ~۱۰ دقیقه) — v0.6.3
+sudo access-agent autoupdate run         # اجرای فوری همان اسکریپتی که تایمر اجرا می‌کند — v0.6.3
 ```
 
 ## حذف کامل

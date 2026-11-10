@@ -54,6 +54,13 @@ die()  { echo -e "${RED} error:${NC} $*" >&2; exit 1; }
 [ "$(id -u)" -eq 0 ] || die "run as root:  sudo bash install.sh $SRC_DIR"
 [ -f "$SRC_DIR/access_agent/server.py" ] || die "invalid SRC_DIR: $SRC_DIR"
 
+# v0.6.3 — single-writer lock: the mobile-app SSH path and the server-side
+# self-update timer must never install concurrently (LESSONS timer-race lesson).
+if command -v flock >/dev/null 2>&1; then
+  exec 9>/run/access-agent-install.lock
+  flock -w 300 9 || die "another install/update is running (lock: /run/access-agent-install.lock)"
+fi
+
 # ---------- 0) detect runtime facts ----------
 PYBIN="$(command -v python3)"
 HOSTNAME_BIN="$(hostname 2>/dev/null || echo server)"
@@ -180,6 +187,10 @@ fi
 
 # ---------- 2) code ----------
 say "Installing code to $OPT ..."
+# v0.6.3 — one-generation backup for self-update rollback (secrets live in $ETC — untouched here)
+rm -rf "$OPT/.prev-access_agent"
+cp -a "$OPT/access_agent" "$OPT/.prev-access_agent" 2>/dev/null || true
+cp -f "$ETC/config.json" "$OPT/.prev-config.json" 2>/dev/null || true
 rm -rf "$OPT/access_agent"
 cp -r "$SRC_DIR/access_agent" "$OPT/access_agent"
 rm -rf "$OPT/access_agent/__pycache__"
@@ -197,6 +208,13 @@ if [ -f "$SRC_DIR/deploy/access-agent-cli.sh" ]; then
   mkdir -p "$(dirname "$CLI_BIN")"   # v0.2.1: destination dir may not exist yet
   cp "$SRC_DIR/deploy/access-agent-cli.sh" "$CLI_BIN"
   chmod 755 "$CLI_BIN"
+fi
+
+# v0.6.3 — server-side self-updater (owner decree 2026-11-11: «پل باید اتوماتیک خودش را آپدیت کند»)
+if [ -f "$SRC_DIR/deploy/self-update.sh" ]; then
+  mkdir -p "$OPT/deploy"
+  cp -f "$SRC_DIR/deploy/self-update.sh" "$OPT/deploy/self-update.sh"
+  chmod 700 "$OPT/deploy/self-update.sh"
 fi
 
 # record config (never contains secrets)
@@ -244,6 +262,17 @@ if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
     systemctl start "$SERVICE"
   fi
   ok "Service started (Restart=always, independent of Docker)."
+  # v0.6.3 — arm the self-update timer (default ON; off: sudo access-agent autoupdate off)
+  if [ -f "$SRC_DIR/deploy/access-agent-update.service" ] && [ -f "$SRC_DIR/deploy/access-agent-update.timer" ] && [ -f "$OPT/deploy/self-update.sh" ]; then
+    sed -e "s#@OPT@#$OPT#g" -e "s#@ETC@#$ETC#g" "$SRC_DIR/deploy/access-agent-update.service" > "${UNIT_DIR}/access-agent-update.service"
+    cp -f "$SRC_DIR/deploy/access-agent-update.timer" "${UNIT_DIR}/access-agent-update.timer"
+    systemctl daemon-reload
+    if systemctl enable --now access-agent-update.timer >/dev/null 2>&1; then
+      ok "Self-update timer armed (every ~10min)."
+    else
+      warn "Self-update timer NOT armed — manual: sudo systemctl enable --now access-agent-update.timer"
+    fi
+  fi
 else
   warn "systemd not available — starting via nohup (survives logout, not reboot)."
   pkill -f "access_agent.server" 2>/dev/null || true
@@ -310,6 +339,7 @@ REPORT="$ETC/install-report.txt"
   echo "OWNER CLI:       access-agent status | url | handoff | rotate-agent-token | revoke-agent-token | set-github-token <token> | set-github-app <id> <pem> | test-github-app"
   echo "HANDOFF:         sudo access-agent handoff   # ready-to-paste text for your AI agent"
   echo "SERVICE:         systemctl status $SERVICE --no-pager"
+  echo "SELF-UPDATE:     timer access-agent-update.timer (~10min) — on/off/run/status:  sudo access-agent autoupdate ..."
   echo "UNINSTALL:       curl -fsSL $ORG_REPO_URL/uninstall.sh | sudo bash"
   echo "============================================================"
 } | tee "$ETC/install-report.tmp" >/dev/null

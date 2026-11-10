@@ -1,0 +1,11 @@
+[Unit]
+Description=Access Agent — self-update from GitHub release channel (AGENT_PROTOCOL §8)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=ACCESS_AGENT_HOME=@ETC@
+WorkingDirectory=@OPT@
+ExecStart=@OPT@/deploy/self-update.sh
+TimeoutStartSec=900

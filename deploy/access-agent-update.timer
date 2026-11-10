@@ -1,0 +1,12 @@
+[Unit]
+Description=Access Agent — self-update schedule (~10 min; off: sudo access-agent autoupdate off)
+
+[Timer]
+OnBootSec=7min
+OnUnitActiveSec=10min
+RandomizedDelaySec=120
+Persistent=true
+Unit=access-agent-update.service
+
+[Install]
+WantedBy=timers.target
