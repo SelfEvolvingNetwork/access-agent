@@ -317,8 +317,8 @@ def run_all() -> None:
     ch("توکن عامل در بلوک، توکن ادمین نیست", AGENT in block and ADMIN not in block)
     fp = handoff.cert_fingerprint()
     ch("اثرانگشت ۶۴hex در بلوک", len(fp) == 64 and fp.lower() in block.lower())
-    ch("هر دو URL مرجع در بلوک", handoff.PROTOCOL_URL in block
-       and handoff.PARASTOO_LOOP_URL in block)
+    ch("سه URL مرجع به‌ترتیب در بلوک (بیداری→پروتکل→حلقه)", block.index(handoff.PARASTOO_BRIEF_URL)
+       < block.index(handoff.PROTOCOL_URL) < block.index(handoff.PARASTOO_LOOP_URL))
     cfg_path = Path(TMP) / "config.json"
     cfg_backup = cfg_path.read_text(encoding="utf-8")
     cfg_path.unlink()

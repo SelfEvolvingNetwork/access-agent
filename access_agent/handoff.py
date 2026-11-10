@@ -5,6 +5,12 @@ copy into the chat with the AI agent — not three values to retype. This module
 composes that ready-to-paste block from files under ACCESS_AGENT_HOME
 (config.json, tls/cert.pem, secrets/agent-token). It never contacts the
 network and never returns the admin token.
+
+Wake-brief decision 2026-11-10 (owner order, «یک سازماندهی یکبار برای همیشه»):
+the block carries exactly THREE reference URLs in one fixed order — the
+one-page ecosystem brief first (the single wake text; parastoo repo,
+docs/ECOSYSTEM.fa.md), then this repo's connection protocol, then the
+dev-test loop. No other doc is duplicated inside the block itself.
 """
 from __future__ import annotations
 
@@ -15,6 +21,8 @@ from pathlib import Path
 
 PROTOCOL_URL = ("https://raw.githubusercontent.com/SelfEvolvingNetwork/"
                 "access-agent/main/docs/AGENT_PROTOCOL.fa.md")
+PARASTOO_BRIEF_URL = ("https://raw.githubusercontent.com/SelfEvolvingNetwork/"
+                      "parastoo/main/docs/ECOSYSTEM.fa.md")
 PARASTOO_LOOP_URL = ("https://raw.githubusercontent.com/SelfEvolvingNetwork/"
                      "parastoo/main/docs/AI_AGENT_LOOP.md")
 
@@ -77,9 +85,15 @@ def build_block() -> str:
         f"CERT_SHA256: {cert_fingerprint()}   <- pin the TLS cert (self-signed on purpose)\n"
         f"AGENT_TOKEN: {agent_token()}   <- agent realm; NEVER ask for the admin token\n"
         "\n"
-        f"Protocol (read first, it is short):\n{PROTOCOL_URL}\n"
+        "Wake brief (read first — the whole ecosystem in one page, 60 seconds):\n"
+        f"{PARASTOO_BRIEF_URL}\n"
+        "Connection protocol (cert pinning, exec, token broker — it is short):\n"
+        f"{PROTOCOL_URL}\n"
         "Then follow the Parastoo dev-test loop — start at section 0 (cold start):\n"
         f"{PARASTOO_LOOP_URL}\n"
+        "Reading order after connecting: INDEX.fa.md §2 of the parastoo repo "
+        "is the single docs map; live state always comes from the server, "
+        "never from local memory.\n"
         "First calls: GET /healthz -> GET /api/status -> report to the owner "
         "and await orders.\n"
         "---- END HANDOFF BLOCK ----"

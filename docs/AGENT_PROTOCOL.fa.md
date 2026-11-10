@@ -13,6 +13,8 @@
 در سمت عامل این سه مقدار فقط در فایل امن کلون پرستو ذخیره می‌شود:
 `/home/z/my-project/parastoo/.secrets/access-agent.env` (chmod 600، gitignored).
 
+**متن بیداری یکتا (v0.6.2 — فرمان مالک 2026-11-10 «یک سازماندهی یکبار برای همیشه»):** بلوک تحویل که مالک از اپ موبایل (`GET /api/admin/handoff`) یا `sudo access-agent handoff` می‌گیرد، دقیقاً **سه مرجع** به‌ترتیب حمل می‌کند: `docs/ECOSYSTEM.fa.md` مخزن parastoo (متن بیداری — یک صفحه، نخستین خوانش اجباری) ← پروتکل همین سند ← حلقهٔ توسعه–تست (`AI_AGENT_LOOP.md` §۰). ترتیب کامل خوانش پس از اتصال: `INDEX.fa.md` §۲ مخزن parastoo — تنها نقشهٔ اسناد؛ هیچ سندی متن دیگری را تکرار نمی‌کند.
+
 ## ۲) اتصال با پین گواهی (بدون اعتماد کورکورانه)
 
 گواهی self-signed است؛ اعتبارسنجی یعنی «هش گواهی دریافتی == هش اعلامی مالک». پایتون استاندارد:
@@ -98,7 +100,7 @@ curl -sk -H "Authorization: Bearer $ACCESS_AGENT_AGENT_TOKEN" \
 |---|---|
 | `GET /api/admin/audit/stream` | جریان زندهٔ SSE از `audit/audit.jsonl` — هر خط audit یک رویداد `data:`؛ `id:` آفست بایت برای ادامه؛ `?cursor=<آفست>` پس از قطع‌شدن، `?backfill=N` (پیش‌فرض ۵۰، سقف ۵۰۰) تاریخچهٔ اولیه؛ ضربان `: ping` هر ~۱۵ ثانیه. خودِ جریان چیزی در audit نمی‌نویسد (بدون حلقهٔ بازخورد) |
 | `GET /api/admin/agent-token` | متادیتای توکن عامل (`set`, `meta.label`, `meta.rotated_at`) — **هرگز خود توکن را نمی‌دهد** |
-| `GET /api/admin/handoff` | بلوک تحویل آمادهٔ کپی برای عامل (همان خروجی `sudo access-agent handoff`)؛ اگر دادهٔ کامل نباشد `409 handoff_unavailable` |
+| `GET /api/admin/handoff` | بلوک تحویل آمادهٔ کپی برای عامل (همان خروجی `sudo access-agent handoff`) — v0.6.2: با URL متن بیداری یکتا (ECOSYSTEM) آغاز می‌شود؛ اگر دادهٔ کامل نباشد `409 handoff_unavailable` |
 | `POST /api/admin/agent-realm/pause` | **کلید توقف** — بدنهٔ `{"paused": true, "reason": "..."}`؛ در `state.json` ماندگار است (ریستارت هم می‌ماند). در حالت توقف، درخواست‌های قلمرو عامل به `/api/exec` و `/api/github/token` و `/api/status` → `403 agent_realm_paused`؛ ادمین همیشه آزاد؛ `healthz` عمومی دست‌نخورده |
 | `POST /api/admin/rotate-agent-token` | v0.3: بدنهٔ اختیاری `{"label": "..."}` (≤۸۰ کاراکتر) در متادیتا ثبت می‌شود |
 | `POST /api/admin/set-github-token` | **ذخیرهٔ پات مالک — «یک‌جای مناسب سرور»** (v0.2؛ از اپ 0.4.6 موبایل این مسیر رسمیِ تنظیم است): بدنهٔ `{"token": "..."}` → نوشتن در `github.env` با دسترسی ۶۰۰ (خارج از هر درخت git)، اعتبارسنجی بهترین‌تلاشی با `api.github.com/user` (آفلاین هم ذخیره می‌شود)، ثبت در audit بدون خودِ توکن. تعویض = همان مسیر؛ حذف = SSH (`rm $ACCESS_AGENT_HOME/github.env`). پرستو موبایل این را در جادوگر فراهم‌سازی (اختیاری) و در داشبورد (کارت «توکن گیت‌هاب برای عامل») ارائه می‌دهد؛ توکن روی گوشی ذخیره نمی‌شود |
