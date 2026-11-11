@@ -1,7 +1,7 @@
 """Host command execution with hard caps — access_agent.execbridge.
 
 Equivalent of SSH for the AI agent, over HTTPS + token. Hard limits mirror the
-Parastoo agent bridge conventions (cmd 8000 chars, timeout 600s, output tail
+Parastoo agent bridge conventions (cmd 16384 chars, timeout 600s, output tail
 200k chars per stream, max 2 concurrent). stdin is always /dev/null — the
 `curl | bash` stdin-hunger lesson from Parastoo docs/LESSONS.md.
 """
@@ -13,7 +13,7 @@ import subprocess
 import threading
 import time
 
-MAX_CMD_CHARS = 8000
+MAX_CMD_CHARS = 16384  # 16 KiB (owner decree 2026-11-11, «most worthy number with software-architecture principles»): headroom for the sanctioned base64-wrapped in-container script path (~12 KB source, x4/3 inflation). The real security wall is unchanged — auth + lifecycle guard + output(200k)/timeout(600s)/concurrency(2) caps + body caps (defense in depth); this bound stays an abuse-size guard, not a gate.
 MAX_TIMEOUT_S = 600
 MAX_OUTPUT_CHARS = 200_000
 MAX_CONCURRENT = 2

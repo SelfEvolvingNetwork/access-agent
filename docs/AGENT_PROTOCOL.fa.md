@@ -68,7 +68,7 @@ curl -sk -H "Authorization: Bearer $ACCESS_AGENT_AGENT_TOKEN" \
 ## ۴) قرارداد `POST /api/exec`
 
 ```json
-{"cmd": "<≤۸۰۰۰ کاراکتر>", "timeout_s": 60, "cwd": "/opt/parastoo"}
+{"cmd": "<≤۱۶۳۸۴ کاراکتر>", "timeout_s": 60, "cwd": "/opt/parastoo"}
 ```
 
 - اجرا با `bash -c` روی خودِ هاست، `stdin=/dev/null`، kill کل process-group در تایم‌اوت.

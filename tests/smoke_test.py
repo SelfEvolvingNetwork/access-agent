@@ -201,8 +201,12 @@ def run_all() -> None:
     code, b = req("POST", "/api/exec", token=AGENT, body={"cmd": "python3 -c 'print(\"x\"*250000)'"})
     ch("exec سقف خروجی ۲۰۰هزار", code == 200
        and len(b.get("stdout", "")) <= 200_000 + 100 and "truncated" in b.get("stdout", ""))
-    code, b = req("POST", "/api/exec", token=AGENT, body={"cmd": "x" * 8001})
-    ch("exec cmd بلند → cmd_too_long", code == 400 and b.get("error") == "cmd_too_long")
+    code, b = req("POST", "/api/exec", token=AGENT, body={"cmd": "echo -n " + "A" * 16376})
+    ch("exec cmd مرز ۱۶۳۸۴ → پذیرفته و اجرا", code == 200
+       and len(b.get("stdout", "")) == 16376)
+    code, b = req("POST", "/api/exec", token=AGENT, body={"cmd": "x" * 17000})
+    ch("exec cmd بلند → cmd_too_long", code == 400 and b.get("error") == "cmd_too_long"
+       and b.get("limit") == 16384)
     code, b = req("POST", "/api/exec", token=AGENT, body={"cmd": "true", "timeout_s": 601})
     ch("exec تایم‌اوت ۶۰۱ → رد", code == 400 and b.get("error") == "timeout_out_of_range")
     code, b = req("POST", "/api/exec", token=AGENT,
