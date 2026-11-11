@@ -3,7 +3,7 @@
 Equivalent of SSH for the AI agent, over HTTPS + token. Hard limits mirror the
 Parastoo agent bridge conventions (cmd 16384 chars, timeout 600s, output tail
 200k chars per stream, max 2 concurrent). stdin is always /dev/null — the
-`curl | bash` stdin-hunger lesson from Parastoo docs/LESSONS.md.
+`curl | bash` stdin-hunger lesson from Parastoo docs/LESSONS.fa.md.
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ _sem = threading.BoundedSemaphore(MAX_CONCURRENT)
 # 2026-11-09, «one transparent pipeline»): while a lifecycle operation runs,
 # exec commands that mutate the platform are refused; while a conflicting exec
 # runs, lifecycle start() refuses. The mid-install deploy race (parastoo
-# docs/LESSONS.md, field 2026-11-08) must stay structurally impossible.
+# docs/LESSONS.fa.md, field 2026-11-08) must stay structurally impossible.
 LIFECYCLE_CONFLICT_TOKENS = (
     "bootstrap.sh", "setup.sh", "install.sh", "uninstall.sh",
     "auto-update.sh", "factory-reset.sh", "tls-store.sh",

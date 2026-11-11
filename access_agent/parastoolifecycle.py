@@ -13,7 +13,7 @@ Rules (non-negotiable):
   install/update/uninstall patterns get 409 lifecycle_busy (read-only
   supervision still passes); while a conflicting exec runs, start()
   refuses with 409 exec_busy. The mid-install deploy race (parastoo
-  docs/LESSONS.md, field 2026-11-08) is structurally closed.
+  docs/LESSONS.fa.md, field 2026-11-08) is structurally closed.
 - Operations run in a background thread; output appends to a log file under
   ACCESS_AGENT_HOME/parastoo-lifecycle/ (root-only directory, chmod 600).
 - "Full uninstall" = POINT ZERO (owner decree 2026-11-09 «هیچ آثاری و گردی

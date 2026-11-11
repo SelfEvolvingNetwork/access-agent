@@ -16,7 +16,7 @@ from pathlib import Path
 PROTOCOL_URL = ("https://raw.githubusercontent.com/SelfEvolvingNetwork/"
                 "access-agent/main/docs/AGENT_PROTOCOL.fa.md")
 PARASTOO_LOOP_URL = ("https://raw.githubusercontent.com/SelfEvolvingNetwork/"
-                     "parastoo/main/docs/AI_AGENT_LOOP.md")
+                     "parastoo/main/docs/AI_AGENT_LOOP.fa.md")
 ECOSYSTEM_URL = ("https://raw.githubusercontent.com/SelfEvolvingNetwork/"
                  "parastoo/main/docs/ECOSYSTEM.fa.md")
 
