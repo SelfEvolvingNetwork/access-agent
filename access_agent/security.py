@@ -212,3 +212,134 @@ def revoke_sessions() -> int:
     n = len(data.get("sessions", []))
     save_sessions({"sessions": []})
     return n
+
+
+# ---------- نشست‌های موقت عامل + کد آشناسازی (v0.7 — اصل «اول سرور، بعد توکن») ----------
+# قرارداد تازه به فرمان مالک: توکن عامل بلندمدت دیگر از چت عبور نمی‌کند.
+#  ۱) مالک با CLI «دعوت‌نامهٔ کوتاه» می‌سازد: URL + هش گواهی + یک کد یک‌بارمصرف
+#     (ONBOARD_CODE با TTL کوتاه؛ فقط هشش روی دیسک است).
+#  ۲) نخستین تراکنش عامل GET /api/agent/onboarding است — فقط‌خواندنی و عمومی —
+#     و دستورالعمل کامل را خود سرور به عامل می‌دهد، نه بلوک اولیهٔ چت.
+#  ۳) عامل کد را در POST /api/agent/onboard با توکن موقتِ «نشست» عوض می‌کند:
+#     TTL کوتاه (پیش‌فرض ۸ ساعت)، سقف ۵ نشست زنده، ابطال‌پذیر، ثبت در audit.
+#  ۴) در آخرین پیام مکالمه، مالک از عامل می‌خواهد نشستش را با
+#     POST /api/agent/session/end پاک کند — هیچ اعتباری روی سرور نمی‌ماند.
+# هیچ رویدادی مقدار کد یا توکن را لاگ نمی‌کند — فقط هش و بولی.
+
+AGENT_SESSION_TTL_S = 8 * 3600
+AGENT_SESSIONS_MAX = 5
+ONBOARD_CODE_TTL_S_DEFAULT = 3600
+
+
+def load_agent_sessions() -> dict:
+    p = home() / "agent_sessions.json"
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("sessions"), list):
+            return data
+    except Exception:
+        pass
+    return {"sessions": []}
+
+
+def save_agent_sessions(data: dict) -> None:
+    p = home() / "agent_sessions.json"
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(p)
+    try:
+        p.chmod(0o600)
+    except Exception:
+        pass
+
+
+def mint_agent_session(ttl_s: int = AGENT_SESSION_TTL_S, ip: str = "") -> tuple[str, dict]:
+    """توکن موقت نشست عامل — raw فقط یک بار در پاسخ همین درخواست برمی‌گردد."""
+    import secrets as pysecrets
+    raw = "aagx_" + pysecrets.token_hex(24)
+    now = time.time()
+    ttl_s = max(60, min(int(ttl_s), 24 * 3600))
+    rec = {
+        "sha": sha256_hex(raw),
+        "created": now_iso(),
+        "expires": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(now + ttl_s)),
+        "ip": ip,
+    }
+    data = load_agent_sessions()
+    data["sessions"] = _prune_sessions(data.get("sessions", []), now)[-AGENT_SESSIONS_MAX:] + [rec]
+    save_agent_sessions(data)
+    return raw, rec
+
+
+def check_agent_session(presented: str) -> bool:
+    if not presented:
+        return False
+    data = load_agent_sessions()
+    live = _prune_sessions(data.get("sessions", []))
+    if len(live) != len(data.get("sessions", [])):
+        data["sessions"] = live
+        save_agent_sessions(data)
+    h = sha256_hex(presented)
+    return any(hmac.compare_digest(h, s.get("sha", "")) for s in live)
+
+
+def revoke_agent_session(presented: str) -> bool:
+    """خروج خودِ عامل از نشست خودش (پایان مکالمه). True اگر نشستی پاک شد."""
+    if not presented:
+        return False
+    h = sha256_hex(presented)
+    data = load_agent_sessions()
+    live = _prune_sessions(data.get("sessions", []))
+    kept = [s for s in live if not hmac.compare_digest(h, s.get("sha", ""))]
+    if len(kept) == len(live):
+        return False
+    data["sessions"] = kept
+    save_agent_sessions(data)
+    return True
+
+
+def mint_onboard_code(ttl_s: int = ONBOARD_CODE_TTL_S_DEFAULT) -> tuple[str, dict]:
+    """کد یک‌بارمصرف آشناسازی — فقط هشش ذخیره می‌شود؛ raw را مالک به عامل می‌دهد."""
+    import secrets as pysecrets
+    raw = "ob_" + pysecrets.token_hex(16)
+    now = time.time()
+    ttl_s = max(60, min(int(ttl_s), 24 * 3600))
+    rec = {"code_sha": sha256_hex(raw), "used": False,
+           "created": now_iso(),
+           "expires": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(now + ttl_s))}
+    p = home() / "onboard.json"
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(rec, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(p)
+    try:
+        p.chmod(0o600)
+    except Exception:
+        pass
+    return raw, rec
+
+
+def consume_onboard_code(presented: str) -> bool:
+    """کد را یک‌بارمصرف مصرف می‌کند؛ کد نامعتبر/منقضی/مصرف‌شده → False."""
+    if not presented:
+        return False
+    p = home() / "onboard.json"
+    try:
+        rec = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(rec, dict) or rec.get("used"):
+        return False
+    if _parse_iso(rec.get("expires", "")) <= time.time():
+        return False
+    if not hmac.compare_digest(sha256_hex(presented), str(rec.get("code_sha", ""))):
+        return False
+    rec["used"] = True
+    rec["used_at"] = now_iso()
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(rec, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(p)
+    try:
+        p.chmod(0o600)
+    except Exception:
+        pass
+    return True

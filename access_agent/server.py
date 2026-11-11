@@ -3,6 +3,14 @@
 Endpoints (v0.5):
   GET  /                          public service info
   GET  /healthz                   public lightweight health
+  GET  /api/agent/onboarding      public read-only onboarding doc (v0.7):
+                                  the full instructions come from the server,
+                                  not from the chat's first message
+  POST /api/agent/onboard         public code-for-token exchange (v0.7):
+                                  one-time invite code -> temporary agent
+                                  session token (aagx_, 8h, max 5 live)
+  POST /api/agent/session/end     agent|admin  end-of-conversation: revoke
+                                  the caller's temporary session (v0.7)
   GET  /api/status                agent|admin  host status snapshot
   POST /api/exec                  agent|admin  run a command on the host;
                                   v0.5.1: refused 409 lifecycle_busy while a
@@ -75,10 +83,11 @@ from . import VERSION
 from . import appcore, bridgeuninstall, githubapp, parastoolifecycle
 from .execbridge import run_exec
 from .githubbroker import disclose, grants_tail, save_token, stored_token
-from .handoff import build_block
-from .security import (audit, audit_tail, agent_paused, check_token, home,
-                       load_state, load_tokens, now_iso, save_tokens,
-                       set_agent_paused, sha256_hex)
+from .handoff import build_block, onboarding_doc
+from .security import (audit, audit_tail, agent_paused, check_agent_session,
+                       check_token, consume_onboard_code, home, load_state,
+                       load_tokens, mint_agent_session, now_iso, save_tokens,
+                       revoke_agent_session, set_agent_paused, sha256_hex)
 
 MAX_BODY = 100_000
 MAX_BODY_HARD = 1_000_000
@@ -96,8 +105,11 @@ POST_ONLY = {
     "/api/admin/parastoo/reinstall",
     "/api/admin/parastoo/update",
     "/api/admin/bridge/uninstall",
+    # v0.7 — آشناسازی: تبادل کد یک‌بارمصرف و پایان نشست (عمومی/عامل)
+    "/api/agent/onboard",
+    "/api/agent/session/end",
 }
-GET_ONLY = {"/", "/healthz", "/api/status", "/api/admin/audit",
+GET_ONLY = {"/", "/healthz", "/api/agent/onboarding", "/api/status", "/api/admin/audit",
             "/api/admin/audit/stream", "/api/admin/sessions",
             "/api/admin/agent-token", "/api/admin/handoff",
             "/api/admin/parastoo/lifecycle-status",
@@ -210,11 +222,14 @@ class Handler(BaseHTTPRequestHandler):
         return ""
 
     def _role(self) -> str:
-        """Return "admin" | "agent" | "" (unauthenticated)."""
+        """Return "admin" | "agent" | "" (unauthenticated).
+
+        v0.7: توکن موقت نشست عامل (aagx_) هم نقش agent می‌گیرد —
+        همان قلمرو، همان audit؛ فقط عمرش کوتاه و ابطالش مستقل است."""
         tok = self._bearer()
         if tok and check_token(tok, "admin"):
             return "admin"
-        if tok and check_token(tok, "agent"):
+        if tok and (check_token(tok, "agent") or check_agent_session(tok)):
             return "agent"
         return ""
 
@@ -274,6 +289,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "service": "access-agent", "version": VERSION,
                                     "detail": "independent AI-agent bridge; see /healthz and /api/status",
                                     "agent_connected": bool(self._role())})
+        # v0.7 — آشناسازی اعتماد: نخستین تراکنش عامل، فقط‌خواندنی و بدون توکن.
+        # فقط دستورالعمل می‌دهد؛ هیچ رزی در آن نیست و توکن، جدای از این مسیر،
+        # با کد یک‌بارمصرف دعوت‌نامه در POST /api/agent/onboard صادر می‌شود.
+        if path == "/api/agent/onboarding":
+            audit("anon", "agent_onboarding_read", {}, self._peer_ip())
+            return self._send(200, onboarding_doc())
         role = self._guard("agent")
         if not role:
             return
@@ -371,6 +392,37 @@ class Handler(BaseHTTPRequestHandler):
         data = _json_body(raw) if raw else {}
         if data is None:
             return self._send(400, {"ok": False, "error": "bad_json"})
+
+        # v0.7 — آشناسازی: کد یک‌بارمصرف دعوت‌نامه ↔ توکن موقت نشست عامل.
+        # عمومی است (عامل هنوز توکن ندارد) اما کد باید زنده، معتبر و
+        # مصرف‌نشده باشد؛ مصرف یک‌باره است و در audit فقط بولی ثبت می‌شود.
+        if path == "/api/agent/onboard":
+            code = str(data.get("onboard_code") or "")
+            if not consume_onboard_code(code):
+                audit("anon", "agent_onboard_refused", {}, self._peer_ip())
+                return self._send(401, {"ok": False, "error": "onboard_refused",
+                                        "detail": "code missing, expired, used or wrong "
+                                                  "— ask the owner for a fresh invite"})
+            raw, rec = mint_agent_session(ip=self._peer_ip())
+            audit("anon", "agent_onboard_granted",
+                  {"expires": rec.get("expires", "")}, self._peer_ip())
+            return self._send(200, {"ok": True, "agent_token": raw,
+                                    "expires": rec.get("expires", ""),
+                                    "note": "temporary session token for THIS "
+                                            "conversation only; end it via "
+                                            "POST /api/agent/session/end when the "
+                                            "owner asks"})
+
+        if path == "/api/agent/session/end":
+            role = self._guard("agent")
+            if not role:
+                return
+            tok = self._bearer()
+            removed = revoke_agent_session(tok) if check_agent_session(tok) else False
+            audit(role, "agent_session_end", {"session_removed": removed}, self._peer_ip())
+            return self._send(200, {"ok": True, "session_removed": removed,
+                                    "detail": "temporary session revoked; no agent "
+                                              "credential of this conversation remains"})
 
         if path == "/api/exec":
             role = self._guard("agent")

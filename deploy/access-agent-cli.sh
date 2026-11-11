@@ -17,7 +17,9 @@
 #    test-github-app         mint a fresh installation token; print metadata only (never the token)
 #    show-github-app         app config summary (no secrets)
 #    clear-github-app        remove app config; broker falls back to PAT mode
-#    handoff                 ready-to-paste handoff block for your AI agent (v0.1.3)
+#    handoff                 ready-to-paste handoff block (legacy, <=0.6.x agents)
+#    invite [ttl_min]        short invite block: URL + cert hash + one-time
+#                            onboarding code (v0.7) — no permanent token in chat
 #    audit [N]               tail of the audit log (default 30)
 # =============================================================
 set -euo pipefail
@@ -160,6 +162,27 @@ import sys
 sys.path.insert(0, sys.argv[1])
 from access_agent.handoff import build_block
 print(build_block())
+PY
+    ;;
+  invite)
+    # v0.7 — دعوت‌نامهٔ کوتاه: توکن بلندمدت دیگر از چت عبور نمی‌کند.
+    # کد یک‌بارمصرف (TTL پیش‌فرض ۶۰ دقیقه) تولید و در خروجی جای‌گذاری می‌شود؛
+    # فقط هشش روی دیسک می‌ماند. برای مکالمهٔ تازه، دوباره همین فرمان را بزنید.
+    TTL="${2:-60}"
+    OPT_DIR="${ACCESS_AGENT_OPT:-/opt/access-agent}"
+    if [ ! -f "$OPT_DIR/access_agent/handoff.py" ]; then
+      die "handoff module missing — upgrade first: re-run bootstrap.sh"
+    fi
+    ACCESS_AGENT_HOME="$ETC" python3 - "$OPT_DIR" "$TTL" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from access_agent.handoff import build_invite_block, invite_missing_inputs
+from access_agent.security import mint_onboard_code
+miss = invite_missing_inputs()
+if miss:
+    raise SystemExit(f"invite data missing: {', '.join(miss)}")
+code, rec = mint_onboard_code(ttl_s=int(sys.argv[2]) * 60)
+print(build_invite_block(code, ttl_min=int(sys.argv[2])))
 PY
     ;;
   audit)
