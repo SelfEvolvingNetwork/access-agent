@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import json
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -343,3 +344,207 @@ def consume_onboard_code(presented: str) -> bool:
     except Exception:
         pass
     return True
+
+
+# ---------- جفت‌سازی عامل با رمز یک‌بارمصرفِ عامل‌ساخته + تأیید انسانی (v0.7.1) ----------
+# فرمان مالک 2026-11-12: رمز پنج‌رقمی را خودِ عامل می‌سازد، در چت برای کاربر
+# چاپ می‌کند و کاربر آن را در پرستو موبایل (بخش «تأیید عامل») وارد می‌کند؛
+# اپ با کانال ادمین رمز را به پل می‌رساند. هیچ رازی از چت عبور نمی‌کند:
+# حلقهٔ اعتماد = چشم مالک + نشست ادمین اپ. مسیرها:
+#   POST /api/agent/claim          ادعا: {code} ← claim_id + claim_secret (عمومی، سقف‌دار)
+#   POST /api/admin/agent-approve  تأیید مالک: {code} (اپ موبایل / SSH)
+#   POST /api/agent/claim/poll     برداشت توکن موقت نشست (فقط یک بار)
+# پنجره‌ها: تأیید ۱۲۰ ثانیه از ادعا (فرمان مالک)؛ برداشت ۳۰ دقیقه از تأیید
+# (عاملِ چتی بین نوبت‌ها پردازهٔ زنده ندارد و ممکن است دیرتر برگردد).
+# هاردنینگ: رمز ضعیف رد؛ سقف ادعای هم‌زمان هر IP و جهانی؛ نرخ‌سنجی؛ هنگام
+# تطبیق فقط قدیمی‌ترین ادعا تأیید می‌شود (تصادم رمز قابل سوءاستفاده نیست).
+# روی دیسک فقط هش (رمز و راز ادعا) می‌ماند؛ audit هرگز مقدار رمز را نمی‌نویسد.
+
+PAIRING_APPROVE_WINDOW_S = 120     # مهلت تأیید در پرستو موبایل — فرمان مالک: ۲ دقیقه
+PAIRING_PICKUP_WINDOW_S = 1800     # مهلت برداشت توکن پس از تأیید
+PAIRING_PENDING_MAX = 16           # سقف جهانی ادعاهای در انتظار
+PAIRING_PENDING_PER_IP = 2         # سقف ادعای هم‌زمان هر IP
+PAIRING_RATE_WINDOW_S = 300        # پنجرهٔ نرخ‌سنجی هر IP
+PAIRING_RATE_MAX = 5               # حداکثر ادعا در پنجره
+
+# رمزهای ضعیف — عامل‌های زبانی این‌ها را «تصادفی» انتخاب می‌کنند؛ رد می‌شوند
+WEAK_PAIRING_CODES = frozenset({
+    "00000", "11111", "22222", "33333", "44444", "55555", "66666",
+    "77777", "88888", "99999", "12345", "54321", "01234", "43210",
+    "98765", "56789", "67890", "11100", "00111", "10101", "01010",
+    "12121", "12321", "11223", "10000", "01000", "00100", "00010",
+    "00001", "20000", "30000", "90000", "13579", "24680", "11112", "22221",
+})
+
+_PAIRING_LOCK = threading.Lock()
+_PAIRING_RATE: dict[str, list[float]] = {}
+
+
+def _pairing_claims_path() -> Path:
+    return home() / "pairing.json"
+
+
+def _load_claims() -> list[dict]:
+    try:
+        data = json.loads(_pairing_claims_path().read_text(encoding="utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("claims"), list):
+            return [c for c in data["claims"] if isinstance(c, dict)]
+    except Exception:
+        pass
+    return []
+
+
+def _save_claims(claims: list[dict]) -> None:
+    p = _pairing_claims_path()
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps({"claims": claims}, indent=2, ensure_ascii=False) + "\n",
+                   encoding="utf-8")
+    tmp.replace(p)
+    try:
+        p.chmod(0o600)
+    except Exception:
+        pass
+
+
+def _sweep_claims(claims: list[dict], now: float | None = None) -> list[dict]:
+    """ادعاهای مرده را می‌ریزد: مصرف‌شده‌ها فوری؛ بقیه تا پایان پنجرهٔ برداشت."""
+    now = time.time() if now is None else now
+    keep: list[dict] = []
+    for c in claims:
+        if c.get("consumed"):
+            continue
+        if c.get("approved"):
+            deadline = c.get("approved_ts", 0.0) + PAIRING_PICKUP_WINDOW_S
+        else:
+            deadline = (c.get("created_ts", 0.0)
+                        + (c.get("approve_window_s") or PAIRING_APPROVE_WINDOW_S)
+                        + PAIRING_PICKUP_WINDOW_S)
+        if now <= deadline:
+            keep.append(c)
+    return keep
+
+
+def _claim_pending(c: dict, now: float) -> bool:
+    return (not c.get("approved") and not c.get("consumed")
+            and c.get("created_ts", 0.0)
+            + (c.get("approve_window_s") or PAIRING_APPROVE_WINDOW_S) > now)
+
+
+def mint_pairing_claim(code: str, ip: str = "",
+                       approve_window_s: int = PAIRING_APPROVE_WINDOW_S) -> dict:
+    """ثبت ادعای جفت‌سازی — رمز ۵ رقمیِ عامل‌ساخته. فقط هش‌ها ذخیره می‌شوند."""
+    code = str(code or "").strip()
+    if len(code) != 5 or not (code.isascii() and code.isdigit()):
+        return {"ok": False, "status": 400, "error": "bad_code",
+                "detail": "code must be exactly 5 ASCII digits (0-9)"}
+    if code in WEAK_PAIRING_CODES:
+        return {"ok": False, "status": 400, "error": "weak_code",
+                "detail": "this code is too predictable — generate a fresh one "
+                          "with secure randomness"}
+    now = time.time()
+    with _PAIRING_LOCK:
+        claims = _sweep_claims(_load_claims(), now)
+        window = [t for t in _PAIRING_RATE.get(ip, [])
+                  if t > now - PAIRING_RATE_WINDOW_S]
+        if len(window) >= PAIRING_RATE_MAX:
+            return {"ok": False, "status": 429, "error": "rate_limited",
+                    "detail": "too many claims from this address — wait a few minutes"}
+        pending = [c for c in claims if _claim_pending(c, now)]
+        if len(pending) >= PAIRING_PENDING_MAX:
+            return {"ok": False, "status": 429, "error": "busy",
+                    "detail": "too many pending claims — try again later"}
+        if sum(1 for c in pending if c.get("ip") == ip) >= PAIRING_PENDING_PER_IP:
+            return {"ok": False, "status": 429, "error": "busy",
+                    "detail": "too many pending claims from this address"}
+        import secrets as pysecrets
+        cid = "acl_" + pysecrets.token_hex(12)
+        secret = "aclsk_" + pysecrets.token_hex(24)
+        claims.append({
+            "id": cid,
+            "secret_sha": sha256_hex(secret),
+            "code_sha": sha256_hex(code),
+            "ip": ip,
+            "created": now_iso(),
+            "created_ts": now,
+            "approve_window_s": int(approve_window_s),
+            "approved": False,
+            "approved_ts": 0.0,
+            "consumed": False,
+        })
+        _save_claims(claims)
+        window.append(now)
+        _PAIRING_RATE[ip] = window
+    return {"ok": True, "claim_id": cid, "claim_secret": secret,
+            "approve_window_s": int(approve_window_s),
+            "pickup_window_s": PAIRING_PICKUP_WINDOW_S}
+
+
+def approve_pairing_code(code: str, actor: str = "admin", ip: str = "") -> dict:
+    """تأیید انسانی رمز — فقط قدیمی‌ترین ادعای زندهٔ منطبق تأیید می‌شود.
+
+    تطبیق روی هش و مقایسهٔ زمان-ثابت است؛ مقدار رمز هرگز ذخیره یا لاگ نمی‌شود."""
+    code = str(code or "").strip()
+    if len(code) != 5 or not (code.isascii() and code.isdigit()):
+        return {"ok": False, "status": 400, "error": "bad_code",
+                "detail": "code must be exactly 5 ASCII digits"}
+    target = sha256_hex(code)
+    now = time.time()
+    with _PAIRING_LOCK:
+        claims = _sweep_claims(_load_claims(), now)
+        cands = [c for c in claims
+                 if _claim_pending(c, now)
+                 and hmac.compare_digest(str(c.get("code_sha", "")), target)]
+        if not cands:
+            _save_claims(claims)
+            return {"ok": False, "status": 404, "error": "no_pending_claim",
+                    "detail": "no pending claim matches this code (wrong, expired "
+                              "or already approved)"}
+        oldest = min(cands, key=lambda c: c.get("created_ts", 0.0))
+        oldest["approved"] = True
+        oldest["approved_ts"] = now
+        oldest["approved_at"] = now_iso()
+        _save_claims(claims)
+    return {"ok": True, "claim_id": oldest.get("id", ""),
+            "pickup_window_s": PAIRING_PICKUP_WINDOW_S}
+
+
+def collect_pairing_token(claim_id: str, claim_secret: str) -> dict:
+    """برداشت توکن موقت نشست عامل — فقط یک بار، فقط با راز ادعا.
+
+    وضعیت‌ها: pending / approved (+agent_token) / expired (پنجرهٔ تأیید
+    گذشته) / unknown (ناشناخته، مصرف‌شده یا پنجرهٔ برداشت گذشته)."""
+    now = time.time()
+    with _PAIRING_LOCK:
+        claims = _sweep_claims(_load_claims(), now)
+        rec = next((c for c in claims if c.get("id") == claim_id), None)
+        if rec is None or rec.get("consumed"):
+            _save_claims(claims)
+            return {"ok": True, "status": "unknown"}
+        if not hmac.compare_digest(sha256_hex(claim_secret or ""),
+                                   str(rec.get("secret_sha", ""))):
+            _save_claims(claims)
+            return {"ok": True, "status": "unknown"}
+        if rec.get("approved"):
+            # ادعای تأییدشده اما با پنجرهٔ برداشت گذشته، همین‌جا در جاروب
+            # افتاده و «unknown» گرفته است — رمز تازه لازم است.
+            rec["consumed"] = True
+            _save_claims(claims)
+            raw, sess = mint_agent_session()
+            return {"ok": True, "status": "approved", "agent_token": raw,
+                    "expires": sess.get("expires", "")}
+        if now > rec.get("created_ts", 0.0) \
+                + (rec.get("approve_window_s") or PAIRING_APPROVE_WINDOW_S):
+            _save_claims(claims)
+            return {"ok": True, "status": "expired"}
+        _save_claims(claims)
+        remaining = int(rec.get("created_ts", 0.0)
+                        + (rec.get("approve_window_s") or PAIRING_APPROVE_WINDOW_S) - now) + 1
+        return {"ok": True, "status": "pending", "retry_after_s": max(0, remaining)}
+
+
+def clear_agent_sessions() -> int:
+    """ابطال همهٔ نشست‌های موقت جفت‌سازی (کلید اضطراری مالک). تعداد را می‌دهد."""
+    data = load_agent_sessions()
+    n = len(_prune_sessions(data.get("sessions", [])))
+    save_agent_sessions({"sessions": []})
+    return n

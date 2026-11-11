@@ -9,6 +9,13 @@ Endpoints (v0.5):
   POST /api/agent/onboard         public code-for-token exchange (v0.7):
                                   one-time invite code -> temporary agent
                                   session token (aagx_, 8h, max 5 live)
+  POST /api/agent/claim           public pairing claim (v0.7.1): agent-made
+                                  5-digit code, rate-capped, hashed at rest
+  POST /api/agent/claim/poll      public token pickup (v0.7.1): claim_id +
+                                  claim_secret -> pending|approved|expired
+  POST /api/admin/agent-approve   admin human-in-the-loop confirmation of the
+                                  agent's pairing code (mobile app / SSH CLI)
+  POST /api/admin/revoke-agent-sessions  admin kill-all temporary sessions
   POST /api/agent/session/end     agent|admin  end-of-conversation: revoke
                                   the caller's temporary session (v0.7)
   GET  /api/status                agent|admin  host status snapshot
@@ -84,10 +91,13 @@ from . import appcore, bridgeuninstall, githubapp, parastoolifecycle
 from .execbridge import run_exec
 from .githubbroker import disclose, grants_tail, save_token, stored_token
 from .handoff import build_block, onboarding_doc
-from .security import (audit, audit_tail, agent_paused, check_agent_session,
-                       check_token, consume_onboard_code, home, load_state,
-                       load_tokens, mint_agent_session, now_iso, save_tokens,
-                       revoke_agent_session, set_agent_paused, sha256_hex)
+from .security import (approve_pairing_code, audit, audit_tail,
+                       agent_paused, check_agent_session, check_token,
+                       clear_agent_sessions, collect_pairing_token,
+                       consume_onboard_code, home, load_state, load_tokens,
+                       mint_agent_session, mint_pairing_claim, now_iso,
+                       save_tokens, revoke_agent_session,
+                       set_agent_paused, sha256_hex)
 
 MAX_BODY = 100_000
 MAX_BODY_HARD = 1_000_000
@@ -108,6 +118,11 @@ POST_ONLY = {
     # v0.7 — آشناسازی: تبادل کد یک‌بارمصرف و پایان نشست (عمومی/عامل)
     "/api/agent/onboard",
     "/api/agent/session/end",
+    # v0.7.1 — جفت‌سازی با رمز عامل‌ساخته + تأیید انسانی
+    "/api/agent/claim",
+    "/api/agent/claim/poll",
+    "/api/admin/agent-approve",
+    "/api/admin/revoke-agent-sessions",
 }
 GET_ONLY = {"/", "/healthz", "/api/agent/onboarding", "/api/status", "/api/admin/audit",
             "/api/admin/audit/stream", "/api/admin/sessions",
@@ -423,6 +438,52 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "session_removed": removed,
                                     "detail": "temporary session revoked; no agent "
                                               "credential of this conversation remains"})
+
+        # v0.7.1 — جفت‌سازی: عامل رمز ۵ رقمی خودساخته را ادعا می‌کند (عمومی،
+        # سقف‌دار). در audit فقط claim_id و خطا ثبت می‌شود — هرگز مقدار رمز.
+        if path == "/api/agent/claim":
+            res = mint_pairing_claim(str(data.get("code") or ""), self._peer_ip())
+            if res.get("ok"):
+                audit("anon", "agent_pairing_claim",
+                      {"claim_id": res.get("claim_id", "")}, self._peer_ip())
+            else:
+                audit("anon", "agent_pairing_claim_refused",
+                      {"error": res.get("error")}, self._peer_ip())
+            # دیکشنس موفق کلید status ندارد؛ خطاها status عددی دارند
+            return self._send(200 if res.get("ok") else res.get("status", 400), res)
+
+        # v0.7.1 — برداشت توکن موقت: فقط با راز ادعا و فقط یک بار.
+        if path == "/api/agent/claim/poll":
+            res = collect_pairing_token(str(data.get("claim_id") or ""),
+                                        str(data.get("claim_secret") or ""))
+            if res.get("status") == "approved":
+                audit("anon", "agent_pairing_token_issued",
+                      {"claim_id": str(data.get("claim_id") or "")[:40]}, self._peer_ip())
+            return self._send(200, res)
+
+        # v0.7.1 — تأیید انسانی: مالک/اپ موبایل رمز عامل را روی کانال ادمین
+        # تأیید می‌کند (معادل SSH: sudo access-agent approve <code>).
+        if path == "/api/admin/agent-approve":
+            role = self._guard("admin")
+            if not role:
+                return
+            res = approve_pairing_code(str(data.get("code") or ""), role, self._peer_ip())
+            if not res.get("ok"):
+                audit(role, "admin_agent_approve", {"matched": False}, self._peer_ip())
+                return self._send(res.get("status", 404), res)
+            audit(role, "admin_agent_approve",
+                  {"matched": True, "claim_id": res.get("claim_id", "")}, self._peer_ip())
+            return self._send(200, res)
+
+        # v0.7.1 — کلید اضطراری مالک: ابطال همهٔ نشست‌های موقت جفت‌سازی.
+        if path == "/api/admin/revoke-agent-sessions":
+            role = self._guard("admin")
+            if not role:
+                return
+            n = clear_agent_sessions()
+            audit(role, "admin_revoke_agent_sessions", {"removed": n}, self._peer_ip())
+            return self._send(200, {"ok": True, "removed": n,
+                                    "detail": "all temporary agent sessions revoked"})
 
         if path == "/api/exec":
             role = self._guard("agent")

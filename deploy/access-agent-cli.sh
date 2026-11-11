@@ -18,8 +18,13 @@
 #    show-github-app         app config summary (no secrets)
 #    clear-github-app        remove app config; broker falls back to PAT mode
 #    handoff                 ready-to-paste handoff block (legacy, <=0.6.x agents)
-#    invite [ttl_min]        short invite block: URL + cert hash + one-time
-#                            onboarding code (v0.7) — no permanent token in chat
+#    invite [pairing|legacy]  short invite block (v0.7.1). Default "pairing":
+#                            URL + cert hash only — the agent makes its own
+#                            5-digit code; you confirm it in Parastoo Mobile.
+#                            "legacy [ttl_min]": old one-time-code block
+#    approve <code>           confirm your AI agent's 5-digit pairing code
+#                            (same as the mobile app's approve section)
+#    revoke-agent-sessions    kill ALL temporary agent pairing sessions
 #    audit [N]               tail of the audit log (default 30)
 # =============================================================
 set -euo pipefail
@@ -165,15 +170,15 @@ print(build_block())
 PY
     ;;
   invite)
-    # v0.7 — دعوت‌نامهٔ کوتاه: توکن بلندمدت دیگر از چت عبور نمی‌کند.
-    # کد یک‌بارمصرف (TTL پیش‌فرض ۶۰ دقیقه) تولید و در خروجی جای‌گذاری می‌شود؛
-    # فقط هشش روی دیسک می‌ماند. برای مکالمهٔ تازه، دوباره همین فرمان را بزنید.
-    TTL="${2:-60}"
+    # v0.7.1 — پیش‌فرض: دعوت‌نامهٔ جفت‌سازی (بدون هیچ رمز)؛ legacy: بلوک کد قدیمی
+    MODE="${2:-pairing}"
     OPT_DIR="${ACCESS_AGENT_OPT:-/opt/access-agent}"
     if [ ! -f "$OPT_DIR/access_agent/handoff.py" ]; then
       die "handoff module missing — upgrade first: re-run bootstrap.sh"
     fi
-    ACCESS_AGENT_HOME="$ETC" python3 - "$OPT_DIR" "$TTL" <<'PY'
+    if [ "$MODE" = "legacy" ]; then
+      TTL="${3:-60}"
+      ACCESS_AGENT_HOME="$ETC" python3 - "$OPT_DIR" "$TTL" <<'PY'
 import sys
 sys.path.insert(0, sys.argv[1])
 from access_agent.handoff import build_invite_block, invite_missing_inputs
@@ -184,6 +189,48 @@ if miss:
 code, rec = mint_onboard_code(ttl_s=int(sys.argv[2]) * 60)
 print(build_invite_block(code, ttl_min=int(sys.argv[2])))
 PY
+    else
+      ACCESS_AGENT_HOME="$ETC" python3 - "$OPT_DIR" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from access_agent.handoff import build_pairing_invite, invite_missing_inputs
+miss = invite_missing_inputs()
+if miss:
+    raise SystemExit(f"invite data missing: {', '.join(miss)}")
+print(build_pairing_invite())
+PY
+    fi
+    ;;
+  approve)
+    # v0.7.1 — تأیید رمز جفت‌سازی عامل از راه SSH؛ هم‌ارز بخش «تأیید عامل» اپ
+    CODE="${2:-}"
+    case "$CODE" in
+      [0-9][0-9][0-9][0-9][0-9]) ;;
+      *) die "usage: access-agent approve <5-digit code from your AI agent>" ;;
+    esac
+    OPT_DIR="${ACCESS_AGENT_OPT:-/opt/access-agent}"
+    ACCESS_AGENT_HOME="$ETC" python3 - "$OPT_DIR" "$CODE" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from access_agent.security import approve_pairing_code
+res = approve_pairing_code(sys.argv[2], actor="owner-cli")
+if not res.get("ok"):
+    raise SystemExit(f"not matched: {res.get('detail') or res.get('error')}")
+print(f"approved — the agent has {res.get('pickup_window_s', 1800) // 60} minutes "
+      "to collect its session token")
+PY
+    ok "agent pairing code approved"
+    ;;
+  revoke-agent-sessions)
+    # v0.7.1 — ابطال همهٔ نشست‌های موقت جفت‌سازی (کلید اضطراری مالک)
+    OPT_DIR="${ACCESS_AGENT_OPT:-/opt/access-agent}"
+    ACCESS_AGENT_HOME="$ETC" python3 - "$OPT_DIR" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from access_agent.security import clear_agent_sessions
+print(f"removed: {clear_agent_sessions()}")
+PY
+    ok "all temporary agent sessions revoked"
     ;;
   audit)
     N="${2:-30}"

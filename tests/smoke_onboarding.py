@@ -153,11 +153,14 @@ def main() -> int:
     # ---------- سمت عامل: نخستین تراکنش فقط‌خواندنی ----------
     c, b = req("GET", "/api/agent/onboarding")
     ch("onboarding بدون توکن 200", c == 200 and b.get("ok") is True)
-    ch("onboarding: پروتکل 0.7", b.get("protocol") == "onboarding/0.7")
+    ch("onboarding: پروتکل 0.7.1", b.get("protocol") == "onboarding/0.7.1")
     ch("onboarding: هیچ توکنی در پاسخ نیست",
        "aa_" not in json.dumps(b) and "adm_" not in json.dumps(b))
-    ch("onboarding: چرخهٔ نشست سه‌مرحله‌ای دارد",
-       set(b.get("session_flow", {}).keys()) == {"1_onboard", "2_first_calls", "3_end_of_conversation"})
+    ch("onboarding: چرخهٔ شش‌مرحله‌ای جفت‌سازی دارد",
+       set(b.get("session_flow", {}).keys()) ==
+       {"1_read_this", "2_claim", "3_ask_human", "4_poll",
+        "5_first_calls", "6_end_of_conversation"})
+    ch("onboarding: مسیر جایگزین کد مالک دارد", "fallback_owner_code" in b)
     ch("onboarding: خط قرمز تخریب صریح است",
        any("تخریبی" in r for r in b.get("rules", [])))
     c, b = req("POST", "/api/agent/onboarding", body={})
@@ -207,7 +210,9 @@ def main() -> int:
 
     # ---------- سند onboarding مستقیم (بدون شبکه) ----------
     doc = onboarding_doc()
-    ch("onboarding_doc: مدل اعتماد چهار بخش دارد", len(doc["trust_model"]) == 4)
+    ch("onboarding_doc: مدل اعتماد شش‌بخشی دارد",
+       set(doc["trust_model"]) == {"tls", "pairing", "scope", "audit",
+                                   "persistent_channel", "your_caution_is_welcome"})
     ch("onboarding_doc: ترتیب خواندن سه‌مرجعی", len(doc["reading_order"]) == 4)
 
     # ---------- نشست اضافی و سقف ۵ ----------
