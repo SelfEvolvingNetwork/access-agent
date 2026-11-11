@@ -352,6 +352,11 @@ def run_all() -> None:
     ch("اثرانگشت ۶۴hex در بلوک", len(fp) == 64 and fp.lower() in block.lower())
     ch("هر دو URL مرجع در بلوک", handoff.PROTOCOL_URL in block
        and handoff.PARASTOO_LOOP_URL in block)
+    ch("متن بیداری یکتا در بلوک (قرارداد سه‌مرجعی v0.6.6)", handoff.ECOSYSTEM_URL in block)
+    ch("خاستگاه: تولید توسط پل روی سرور مالک تصریح شده", "روی سرور مالک تولید کرده" in block)
+    ch("دعوت نقش، نه انتساب هویت", "عامل مرکزی پرستو" in block and "You are" not in block)
+    ch("مدل اعتماد: پین گواهی + قلمرو توکن + خطوط قرمز", "ضمانت مالک" in block
+       and "ابطال" in block and "رد نکن" in block)
     cfg_path = Path(TMP) / "config.json"
     cfg_backup = cfg_path.read_text(encoding="utf-8")
     cfg_path.unlink()

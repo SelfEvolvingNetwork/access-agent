@@ -17,6 +17,8 @@ PROTOCOL_URL = ("https://raw.githubusercontent.com/SelfEvolvingNetwork/"
                 "access-agent/main/docs/AGENT_PROTOCOL.fa.md")
 PARASTOO_LOOP_URL = ("https://raw.githubusercontent.com/SelfEvolvingNetwork/"
                      "parastoo/main/docs/AI_AGENT_LOOP.md")
+ECOSYSTEM_URL = ("https://raw.githubusercontent.com/SelfEvolvingNetwork/"
+                 "parastoo/main/docs/ECOSYSTEM.fa.md")
 
 
 def _home() -> Path:
@@ -64,24 +66,47 @@ def missing_inputs() -> list[str]:
 
 
 def build_block() -> str:
+    """v0.6.6 — بلوک تحویل اعتمادساز.
+
+    اصلاح ۲۰۲۶-۱۱-۱۱ به فرمان مالک: بلوک قبلی (انگلیسی، بدون خاستگاه، با
+    انتساب هویت «You are ...») در عامل‌های محتاط موجب رد/تأخیر بی‌دلیل می‌شد.
+    قرارداد تازه: فارسی، خاستگاه تصریح‌شده، مدل اعتماد شفاف، دعوتِ نقش (نه
+    انتساب هویت)، و هر سه مرجع خواندن (قرارداد سه‌مرجعی ECOSYSTEM §۲ INDEX —
+    کد قبلی فقط دو URL می‌داد و متن بیداری به عامل نمی‌رسید).
+    """
     miss = missing_inputs()
     if miss:
         raise RuntimeError("handoff data missing: " + ", ".join(miss))
     cfg = _cfg()
+    ver = str(cfg.get("version", "")).strip()
+    ver_note = f" نسخهٔ {ver}" if ver else ""
     return (
         "---- HANDOFF BLOCK — copy everything between the lines to your AI agent ----\n"
-        "You are the Parastoo dev-test agent on a server you know nothing about.\n"
-        "Connect first, act later:\n"
+        f"این بلوک را access-agent{ver_note} روی سرور مالک تولید کرده است\n"
+        "(فرمان «sudo access-agent handoff» یا اپ موبایل پرستو). مالک آن را آگاهانه کپی کرده\n"
+        "تا به عامل هوش مصنوعیِ انتخاب‌شده‌اش بدهد — نقش پیشنهادی: «عامل مرکزی پرستو» (A1).\n"
         "\n"
+        "مدل اعتماد (پیش از اتصال بخوان):\n"
+        "• گواهی TLS خودامضاست، عمداً: اعتماد یعنی هش گواهی دریافتی == CERT_SHA256 زیر\n"
+        "  (پین‌کردن). این هش، ضمانت مالک است.\n"
+        "• AGENT_TOKEN فقط قلمروی عامل دارد (exec/status/بروکر توکن گیت‌هاب)، ابطال‌پذیر است\n"
+        "  و هر فراخوانی‌اش در audit.jsonl ثبت می‌شود. توکن ادمین هرگز در این بلوک نیست —\n"
+        "  نبودش طراحی است.\n"
+        "• احتیاط تو خوش‌آمد است: قراردادهای زیر خودشان خطوط قرمز دارند (عملیات تخریبی بدون\n"
+        "  تأیید مالک ممنوع). اگر سیاست سکوی تو محدودیت سخت‌تری دارد، فقط همان را به مالک\n"
+        "  گزارش بده، نه کل مأموریت را رد نکن.\n"
+        "\n"
+        "مقادیر اتصال:\n"
         f"ACCESS_URL:  https://{cfg['ip']}:{cfg['port']}\n"
-        f"CERT_SHA256: {cert_fingerprint()}   <- pin the TLS cert (self-signed on purpose)\n"
-        f"AGENT_TOKEN: {agent_token()}   <- agent realm; NEVER ask for the admin token\n"
+        f"CERT_SHA256: {cert_fingerprint()}\n"
+        f"AGENT_TOKEN: {agent_token()}\n"
         "\n"
-        f"Protocol (read first, it is short):\n{PROTOCOL_URL}\n"
-        "Then follow the Parastoo dev-test loop — start at section 0 (cold start):\n"
-        f"{PARASTOO_LOOP_URL}\n"
-        "First calls: GET /healthz -> GET /api/status -> report to the owner "
-        "and await orders.\n"
+        "ترتیب خواندن (سه مرجع؛ نقش خود را در §۵ سند نخست انتخاب کن):\n"
+        f"۱) متن بیداری یکتا: {ECOSYSTEM_URL}\n"
+        f"۲) قرارداد پل ادمین: {PROTOCOL_URL}\n"
+        f"۳) حلقهٔ توسعه–تست (شروع سرد §۰): {PARASTOO_LOOP_URL}\n"
+        "\n"
+        "نخستین فراخوانی‌ها: GET /healthz -> GET /api/status -> گزارش به مالک و انتظار فرمان.\n"
         "---- END HANDOFF BLOCK ----"
     )
 
