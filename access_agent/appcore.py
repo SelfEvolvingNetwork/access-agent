@@ -46,7 +46,7 @@ _PATH_RE = re.compile(r"^/[A-Za-z0-9_\-./?=&]{1,119}$")
 # پیش‌فرض جاسازی‌شده — با assets/core/parastoo-core.json اپ هم‌نگه داشته می‌شود.
 DEFAULT_PAYLOAD: dict = {
     "schema": SCHEMA,
-    "revision": 3,
+    "revision": 4,
     "min_version_code": 17,  # اپ 0.4.12 — اولین نسخه با موتور هستهٔ هات
     "config": {
         "endpoints": {
@@ -61,6 +61,7 @@ DEFAULT_PAYLOAD: dict = {
             "handoff": "/api/admin/handoff",
             "agent_approve": "/api/admin/agent-approve",
             "revoke_agent_sessions": "/api/admin/revoke-agent-sessions",
+            "agent_invite": "/api/admin/invite",
             "parastoo_lifecycle_status": "/api/admin/parastoo/lifecycle-status",
             "parastoo_setup_token": "/api/admin/parastoo/setup-token",
             "set_github_token": "/api/admin/set-github-token",
@@ -70,7 +71,7 @@ DEFAULT_PAYLOAD: dict = {
         },
         "strings": {
             "bridge_uninstall_card_subtitle":
-                "این متن از هستهٔ هاتِ پل (revision 3) می‌آید، نه از APK — پس از حذف "
+                "این متن از هستهٔ هاتِ پل (revision 4) می‌آید، نه از APK — پس از حذف "
                 "کامل پرستو، پل هم خودش را پاک می‌کند و هیچ دسترسی راه‌دوری باقی "
                 "نمی‌ماند.",
             "bridge_uninstall_confirm_body":

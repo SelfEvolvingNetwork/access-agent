@@ -90,7 +90,7 @@ from . import VERSION
 from . import appcore, bridgeuninstall, githubapp, parastoolifecycle
 from .execbridge import run_exec
 from .githubbroker import disclose, grants_tail, save_token, stored_token
-from .handoff import build_block, onboarding_doc
+from .handoff import build_block, build_pairing_invite, onboarding_doc
 from .security import (approve_pairing_code, audit, audit_tail,
                        agent_paused, check_agent_session, check_token,
                        clear_agent_sessions, collect_pairing_token,
@@ -127,6 +127,7 @@ POST_ONLY = {
 GET_ONLY = {"/", "/healthz", "/api/agent/onboarding", "/api/status", "/api/admin/audit",
             "/api/admin/audit/stream", "/api/admin/sessions",
             "/api/admin/agent-token", "/api/admin/handoff",
+            "/api/admin/invite",
             "/api/admin/parastoo/lifecycle-status",
             "/api/admin/parastoo/setup-token",
             "/api/admin/app/core-config"}
@@ -358,6 +359,20 @@ class Handler(BaseHTTPRequestHandler):
                                         "detail": str(e)})
             audit(role, "admin_handoff_served", {}, self._peer_ip())
             return self._send(200, {"ok": True, "block": block})
+        # v0.7.2 — دعوت‌نامهٔ جفت‌سازی برای اپ موبایل: همان متنِ بی‌رمزِ CLI
+        # «invite»، بدون نیاز به SSH. مالک آن را در پرستو موبایل کپی می‌کند.
+        # لورفتنش بی‌خطر است (فقط URL و هش گواهی؛ هیچ رازی در آن نیست).
+        if path == "/api/admin/invite":
+            role = self._guard("admin")
+            if not role:
+                return
+            try:
+                invite = build_pairing_invite()
+            except Exception as e:
+                return self._send(409, {"ok": False, "error": "invite_unavailable",
+                                        "detail": str(e)})
+            audit(role, "admin_invite_served", {}, self._peer_ip())
+            return self._send(200, {"ok": True, "invite": invite})
         if path == "/api/admin/parastoo/lifecycle-status":
             role = self._guard("admin")
             if not role:
@@ -418,7 +433,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(401, {"ok": False, "error": "onboard_refused",
                                         "detail": "code missing, expired, used or wrong "
                                                   "— ask the owner for a fresh invite"})
-            raw, rec = mint_agent_session(ip=self._peer_ip())
+            raw, rec = mint_agent_session(ip=self._peer_ip(), origin="onboard")
             audit("anon", "agent_onboard_granted",
                   {"expires": rec.get("expires", "")}, self._peer_ip())
             return self._send(200, {"ok": True, "agent_token": raw,

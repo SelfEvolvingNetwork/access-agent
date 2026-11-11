@@ -272,6 +272,35 @@ def main() -> int:
     ch("core-config: revoke_agent_sessions در نقشه است",
        "/api/admin/revoke-agent-sessions" in b.get("config_json", ""))
 
+    # ---------- v0.7.2 — دعوت‌نامه از اپ (GET /api/admin/invite) ----------
+    c, b = req("GET", "/api/admin/invite")
+    ch("invite بدون توکن → 401", c == 401)
+    c, b = req("GET", "/api/admin/invite", token=AGENT)
+    ch("invite با توکن عامل → 403", c == 403)
+    c, b = req("GET", "/api/admin/invite", token=ADMIN)
+    inv = b.get("invite", "")
+    ch("invite ادمین → 200 و متن بلند دارد", c == 200 and len(inv) > 200)
+    ch("invite: URL و هش گواهی دارد", "https://203.0.113.7:9999" in inv)
+    ch("invite: هیچ رازی در آن نیست",
+       "aa_" not in inv and "adm_" not in inv and "ob_" not in inv
+       and "aclsk_" not in inv and "aagx_" not in inv)
+    al = (Path(TMP) / "audit" / "audit.jsonl").read_text(encoding="utf-8")
+    ch("audit: admin_invite_served ثبت شده", "admin_invite_served" in al)
+    c, b = req("GET", "/api/admin/app/core-config", token=ADMIN)
+    ch("core-config: agent_invite در نقشه است (revision 4)",
+       "/api/admin/invite" in b.get("config_json", ""))
+
+    # ---------- v0.7.2 — خاستگاه نشست (origin) در رکورد ----------
+    c, b = req("POST", "/api/agent/claim", body={"code": "71538"})
+    CID3, SEC3 = b.get("claim_id", ""), b.get("claim_secret", "")
+    req("POST", "/api/admin/agent-approve", token=ADMIN, body={"code": "71538"})
+    c, b = poll(CID3, SEC3)
+    ch("جفت‌سازی سوم موفق", b.get("status") == "approved")
+    sess_txt = (Path(TMP) / "agent_sessions.json").read_text(encoding="utf-8")
+    ch("نشست جفت‌سازی origin=pairing دارد", '"pairing"' in sess_txt)
+    c, b = req("GET", "/api/status", token=b.get("agent_token", "") or "x")
+    ch("توکن جفت‌شدهٔ سوم کار می‌کند", c == 200)
+
     # ---------- سقف‌ها و انقضا (فراخوانی مستقیم، خانهٔ دوم) ----------
     HOME2 = tempfile.mkdtemp(prefix="access-agent-pairing2.")
     real_home = os.environ["ACCESS_AGENT_HOME"]
@@ -320,6 +349,16 @@ def main() -> int:
             security.PAIRING_PICKUP_WINDOW_S = old_pickup
         ch("انقضای پنجرهٔ برداشت → unknown (جاروب شده)",
            rp2.get("status") == "unknown")
+
+        # جاروی دیکشنری نرخ (v0.7.2): با آدرس‌های کهنهٔ بسیار، حافظه نگردد
+        security._PAIRING_RATE.clear()
+        for i in range(600):
+            security._PAIRING_RATE[f"10.5.5.{i}"] = [0.0]   # همه کهنه
+        rr = security.mint_pairing_claim("39418", ip="10.9.9.8")
+        ch("جاروی نرخ: کهنه‌ها حذف و ادعای تازه پذیرفته شد",
+           rr.get("ok") and len(security._PAIRING_RATE) < 100)
+        ch("جاروی نرخ: آدرس درخواست‌کننده در دیکشنری مانده",
+           "10.9.9.8" in security._PAIRING_RATE)
     finally:
         os.environ["ACCESS_AGENT_HOME"] = real_home
 

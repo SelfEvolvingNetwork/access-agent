@@ -482,6 +482,63 @@ def start(action: str, confirm: str = "") -> dict:
             "log_file": str(log_file), "detail": "poll /api/admin/parastoo/lifecycle-status"}
 
 
+# ---------- سلامت استک پرستو (v0.7.2 — دیده‌شدنِ بوت پس از ری‌استارت) ----------
+# فرمان مالک ۲۰۲۶-۱۱-۱۲ (پس از اولین ری‌استارت واقعی سرور): «آیا پرستو بعد
+# از ری‌استارت بالا آمده؟» باید از همان اپ موبایل پاسخ داده شود — بدون SSH.
+# این بخش فقط می‌خواند: docker ps (فیلتر نام) + healthz هسته از داخل کانتینر.
+# هیچ چیز را تغییر نمی‌دهد، هرگز استثنا نمی‌اندازد و در audit لاگ نمی‌شود
+# (جمع‌بندی با هر نظرسنجی وضعیت — ارزان و فقط‌خواندنی).
+
+_STACK_CONTAINERS = ("parastoo-postgres", "parastoo-gitea", "parastoo-core",
+                     "parastoo-dns", "parastoo-traefik")
+
+
+def stack_health() -> dict:
+    """عکس فوری فقط‌خواندنی از استک پرستو — برای پاسخ «بالا آمده یا نه؟».
+
+    خروجی: checked (داکر جواب داد؟)، containers (پنج کانتینر اصلی: وضعیت)،
+    project_containers_up (تعداد کانتینر پروژه‌های در حال اجرا)، core_healthz
+    (پاسخ سلامت هسته از داخل کانتینر). خطاها best-effort در note می‌آید.
+    """
+    out: dict = {"checked": False, "containers": {},
+                 "project_containers_up": 0, "core_healthz": False, "note": ""}
+    if not installed():
+        out["note"] = "parastoo not installed"
+        return out
+    try:
+        res = subprocess.run(
+            ["docker", "ps", "-a", "--filter", "name=parastoo-",
+             "--format", "{{.Names}}\t{{.Status}}"],
+            capture_output=True, text=True, timeout=10, check=False)
+        if res.returncode != 0:
+            out["note"] = (res.stderr or "docker ps failed").strip()[:120]
+            return out
+        out["checked"] = True
+        up = 0
+        for line in res.stdout.splitlines():
+            name, _, status = line.partition("\t")
+            name = name.strip()
+            if not name:
+                continue
+            if name in _STACK_CONTAINERS:
+                out["containers"][name] = status.strip()[:60]
+            elif status.strip().lower().startswith("up "):
+                up += 1
+        out["project_containers_up"] = up
+    except Exception as e:
+        out["note"] = f"docker ps: {type(e).__name__}"
+        return out
+    try:
+        res = subprocess.run(
+            ["docker", "exec", "parastoo-core", "curl", "-fsS", "-m", "4",
+             "http://localhost:8000/healthz"],
+            capture_output=True, text=True, timeout=12, check=False)
+        out["core_healthz"] = res.returncode == 0 and '"ok"' in (res.stdout or "")
+    except Exception:
+        out["core_healthz"] = False
+    return out
+
+
 def status_snapshot() -> dict:
     with _lock:
         snap = dict(_state)
@@ -499,4 +556,5 @@ def status_snapshot() -> dict:
         "duration_s": snap.get("duration_s"),
         "log_file": snap.get("log_file", ""),
         "log_tail": log_tail(LOG_TAIL_DEFAULT),
+        "stack": stack_health(),
     }

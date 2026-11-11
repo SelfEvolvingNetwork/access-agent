@@ -254,8 +254,14 @@ def save_agent_sessions(data: dict) -> None:
         pass
 
 
-def mint_agent_session(ttl_s: int = AGENT_SESSION_TTL_S, ip: str = "") -> tuple[str, dict]:
-    """توکن موقت نشست عامل — raw فقط یک بار در پاسخ همین درخواست برمی‌گردد."""
+def mint_agent_session(ttl_s: int = AGENT_SESSION_TTL_S, ip: str = "",
+                        origin: str = "onboard") -> tuple[str, dict]:
+    """توکن موقت نشست عامل — raw فقط یک بار در پاسخ همین درخواست برمی‌گردد.
+
+    origin (v0.7.2): خاستگاه نشست برای forensics — "pairing" (تأیید انسانی)،
+    "onboard" (کد یک‌بارمصرف legacy). فقط برچسب است؛ هیچ تفاوتی در قلمرو
+    ندارد — سرور از روی مسیر صدور می‌داند این عامل از طرف چه کسی آمده است.
+    """
     import secrets as pysecrets
     raw = "aagx_" + pysecrets.token_hex(24)
     now = time.time()
@@ -265,6 +271,7 @@ def mint_agent_session(ttl_s: int = AGENT_SESSION_TTL_S, ip: str = "") -> tuple[
         "created": now_iso(),
         "expires": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(now + ttl_s)),
         "ip": ip,
+        "origin": str(origin)[:24],
     }
     data = load_agent_sessions()
     data["sessions"] = _prune_sessions(data.get("sessions", []), now)[-AGENT_SESSIONS_MAX:] + [rec]
@@ -442,8 +449,16 @@ def mint_pairing_claim(code: str, ip: str = "",
                 "detail": "this code is too predictable — generate a fresh one "
                           "with secure randomness"}
     now = time.time()
+    global _PAIRING_RATE  # v0.7.2 — جاروی دیکشنری نرخ ممکن است آن را بازسازی کند
     with _PAIRING_LOCK:
         claims = _sweep_claims(_load_claims(), now)
+        # v0.7.2 — جاروی دیکشنری نرخ: با آدرس‌های یکتای بسیار، حافظه بی‌کران
+        # نگردد (هر مدخل فقط چند timestamp است؛ کهنه‌ها همین‌جا می‌ریزند).
+        if len(_PAIRING_RATE) > 512:
+            cutoff = now - PAIRING_RATE_WINDOW_S
+            _PAIRING_RATE = {k: [t for t in v if t > cutoff]
+                             for k, v in _PAIRING_RATE.items()}
+            _PAIRING_RATE = {k: v for k, v in _PAIRING_RATE.items() if v}
         window = [t for t in _PAIRING_RATE.get(ip, [])
                   if t > now - PAIRING_RATE_WINDOW_S]
         if len(window) >= PAIRING_RATE_MAX:
@@ -529,7 +544,7 @@ def collect_pairing_token(claim_id: str, claim_secret: str) -> dict:
             # افتاده و «unknown» گرفته است — رمز تازه لازم است.
             rec["consumed"] = True
             _save_claims(claims)
-            raw, sess = mint_agent_session()
+            raw, sess = mint_agent_session(origin="pairing")
             return {"ok": True, "status": "approved", "agent_token": raw,
                     "expires": sess.get("expires", "")}
         if now > rec.get("created_ts", 0.0) \
