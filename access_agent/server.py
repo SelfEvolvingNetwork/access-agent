@@ -102,7 +102,7 @@ from . import VERSION
 from . import appcore, bridgeuninstall, githubapp, parastoolifecycle
 from .execbridge import run_exec
 from .githubbroker import disclose, grants_tail, save_token, stored_token
-from .handoff import build_block, build_pairing_invite, onboarding_doc
+from .handoff import build_block, build_pairing_invite, cert_fingerprint, onboarding_doc
 from .security import (approve_pairing_code, audit, audit_tail,
                        agent_paused, check_agent_session, check_token,
                        clear_agent_sessions, collect_pairing_token,
@@ -328,8 +328,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(405, {"ok": False, "error": "method_not_allowed",
                                     "detail": "use POST"})
         if path == "/healthz":
+            # v0.8.2 — هش گواهی عمومی است (همان که دعوت‌نامه‌ها هم می‌برند؛ رازی
+            # نیست). فرمان مالک ۲۰۲۶-۱۱-۱۲ («الگوی مخرب آپدیت»): کلاینت باید بتواند
+            # پیوستگی هویت سرور را بی‌هزینه بپرسد — «آیا اثرانگشت عوض شده؟»
+            # جوابش از خود سرور، بدون SSH و بدون توکن.
             return self._send(200, {"ok": True, "service": "access-agent", "version": VERSION,
-                                    "uptime_s": int(time.monotonic() - STARTED_AT)})
+                                    "uptime_s": int(time.monotonic() - STARTED_AT),
+                                    "cert_sha256": cert_fingerprint()})
         if path == "/":
             return self._send(200, {"ok": True, "service": "access-agent", "version": VERSION,
                                     "detail": "independent AI-agent bridge; see /healthz and /api/status",

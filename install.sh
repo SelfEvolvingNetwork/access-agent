@@ -228,6 +228,34 @@ if [ -f "$SRC_DIR/deploy/access-agent-cli.sh" ]; then
   chmod 755 "$CLI_BIN"
 fi
 
+# v0.8.2 — in-system data rotation (owner decree 2026-11-12, «harmful update
+# pattern»): an app-core override left by an OLDER code generation must not
+# outlive the code it came with. If the override on disk is older than the
+# payload embedded in the code we just installed, remove it — the bridge then
+# serves the newer embedded payload (appcore.snapshot() also refuses to serve
+# an older override at runtime; this is belt-and-braces hygiene, best-effort).
+if [ -f "$ETC/app-core/core.json" ]; then
+  STALE_MSG="$(mktemp)"
+  "$PYBIN" - "$ETC" "$OPT" >"$STALE_MSG" 2>/dev/null <<'STALE_PY' || true
+import json, os, re, sys
+etc, opt = sys.argv[1], sys.argv[2]
+try:
+    src_txt = open(os.path.join(opt, "access_agent", "appcore.py"), encoding="utf-8").read()
+    m = re.search(r'"revision":\s*(\d+)', src_txt)
+    embedded_rev = int(m.group(1)) if m else 0
+    ov = json.loads(open(os.path.join(etc, "app-core", "core.json"), encoding="utf-8").read())
+    if int(ov.get("revision", 0)) < embedded_rev:
+        os.remove(os.path.join(etc, "app-core", "core.json"))
+        print(f"removed: override rev {ov.get('revision')} < embedded rev {embedded_rev}")
+except Exception:
+    pass  # unreadable override: leave it; the runtime guard still protects serving
+STALE_PY
+  if grep -q "^removed:" "$STALE_MSG" 2>/dev/null; then
+    ok "app-core: stale override cleared — $(cat "$STALE_MSG")"
+  fi
+  rm -f "$STALE_MSG"
+fi
+
 # record config (never contains secrets)
 COMMIT="${ACCESS_AGENT_DEPLOYED_COMMIT:-}"
 "$PYBIN" - "$ETC" "$PORT" "$IP" "$VERSION" "$COMMIT" <<'PY'

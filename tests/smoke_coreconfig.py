@@ -183,6 +183,26 @@ def run() -> None:
     ch("HTTP اورراید را می‌بیند (revision جلوتر)",
        code == 200 and b.get("revision") == DEF_REV + 1 and b.get("source") == "override")
 
+    # ---------- v0.8.2: اورراید کهنه‌تر از کد → هرگز سرو نمی‌شود ----------
+    # میدان ۲۰۲۶-۱۱-۱۲: فایل rev2 روی سرور زنده پس از هر آپدیت پل سایه می‌انداخت.
+    stale = json.loads(json.dumps(ov))
+    stale["revision"] = DEF_REV - 1          # معتبر اما کهنه‌تر از کدِ در حال اجرا
+    (odir / "core.json").write_text(json.dumps(stale, ensure_ascii=False), encoding="utf-8")
+    s3 = appcore.snapshot()
+    ch("اورراید کهنه‌تر از کد → پیش‌فرض سرو می‌شود",
+       s3.get("revision") == DEF_REV and s3.get("source") == "default")
+    ch("اورراید کهنه → note صادقانه دارد", bool(s3.get("note")))
+    code, b = req("GET", "/api/admin/app/core-config", token=ADMIN)
+    ch("HTTP هم اورراید کهنه را رد می‌کند",
+       code == 200 and b.get("revision") == DEF_REV and b.get("source") == "default")
+
+    # ---------- v0.8.2: هش گواهی در healthz (پیوستگی هویت، بدون توکن) ----------
+    from access_agent import handoff as _handoff
+    code, hb = req("GET", "/healthz")
+    ch("healthz فیلد cert_sha256 دارد و با handoff.cert_fingerprint() یکی است",
+       code == 200 and hb.get("cert_sha256") == _handoff.cert_fingerprint()
+       and isinstance(hb.get("cert_sha256"), str))
+
     # ---------- override نامعتبر → فالبک امن ----------
     bad_cases = {
         "revision صفر": {**ov, "revision": 0},

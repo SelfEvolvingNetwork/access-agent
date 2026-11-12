@@ -18,6 +18,12 @@
 - فایل اورراید: ACCESS_AGENT_HOME/app-core/core.json — اگر نامعتبر بود کل
   فایل نادیده گرفته می‌شود و به پیش‌فرض جاسازی‌شده برمی‌گردیم (note در پاسخ).
   ادغام جزئی نداریم: یا کل فایل معتبر است یا هیچ.
+- v0.8.2 — قانون تازگی (فرمان مالک ۲۰۲۶-۱۱-۱۲، «الگوی مخربِ آپدیت»): اوررایدِ
+  کهنه‌تر از کدِ در حال اجرا هرگز سرو نمی‌شود. اگر revision اورراید <
+  revision پیش‌فرض جاسازی‌شده باشد، اورراید نادیده گرفته می‌شود و همان
+  پیش‌فرض سرو می‌شود (note صادقانه در پاسخ). اورراید جای پیشبردنِ داده است،
+  نه نگه‌داشتنِ گذشته — میدان ۲۰۲۶-۱۱-۱۲: فایل rev2 از دورانِ 0.5.8 روی
+  سرور زنده پس از هر آپدیت پل سایه می‌انداخت و اپ دادهٔ قدیمی می‌گرفت.
 - sha256 پوشش دقیقِ متنِ config_json است — اپ همان بایت دریافتی را هش
   می‌کند؛ خرابی کش یا دستکاری در مسیر، در اپ رد می‌شود.
 """
@@ -162,11 +168,19 @@ def _read_override() -> tuple[dict | None, str]:
 
 
 def snapshot() -> dict:
-    """پاکت آمادهٔ سرو به اپ — کل فایل معتبر یا پیش‌فرض جاسازی‌شده."""
+    """پاکت آمادهٔ سرو به اپ — کل فایل معتبر یا پیش‌فرض جاسازی‌شده.
+
+    v0.8.2 — قانون تازگی: اوررایدِ کهنه‌تر از پیش‌فرضِ کدِ در حال اجرا سرو
+    نمی‌شود (آپدیت پل هیچ‌وقت نباید دادهٔ قدیمی‌تر از خودش سرو کند)."""
     override, note = _read_override()
     if override is None:
         payload = DEFAULT_PAYLOAD
         source = "default"
+    elif int(override.get("revision", 0)) < DEFAULT_PAYLOAD["revision"]:
+        payload = DEFAULT_PAYLOAD
+        source = "default"
+        note = (f"override ignored (revision {override.get('revision')} is older "
+                f"than embedded revision {DEFAULT_PAYLOAD['revision']})")
     else:
         payload = override
         source = "override"
