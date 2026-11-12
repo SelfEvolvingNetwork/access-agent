@@ -13,7 +13,7 @@
 | `ACCESS_AGENT_AGENT_TOKEN` | `aa_...` | Bearer همهٔ مسیرهای عامل (به‌جز healthz) |
 
 در سمت عامل این سه مقدار فقط در فایل امن کلون پرستو ذخیره می‌شود:
-`/home/z/my-project/parastoo/.secrets/access-agent.env` (chmod 600، gitignored).
+`/home/z/my-project/repos/parastoo/.secrets/access-agent.env` (chmod 600، gitignored).
 
 **بلوک تحویل (v0.6.6+):** مالک این سه مقدار را دستی تایپ نمی‌کند؛ فرمان `sudo access-agent handoff` (یا اپ موبایل) بلوک آمادهٔ کپی می‌سازد. قرارداد متن بلوک — اصلاح ۲۰۲۶-۱۱-۱۱ به فرمان مالک، پس از آن‌که بلوک انگلیسیِ قدیمی («You are …») در عامل‌های محتاط موجب رد/تأخیر بی‌دلیل شد:
 1. **خاستگاه تصریح‌شده:** بلوک می‌گوید خودِ پلِ روی سرور مالک آن را تولید کرده و مالک آگاهانه کپی کرده است.
@@ -57,7 +57,7 @@ import hashlib, json, socket, ssl, urllib.request
 
 def load_access_env():
     env = {}
-    for line in open("/home/z/my-project/parastoo/.secrets/access-agent.env", encoding="utf-8"):
+    for line in open("/home/z/my-project/repos/parastoo/.secrets/access-agent.env", encoding="utf-8"):
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             k, _, v = line.partition("=")
@@ -95,7 +95,7 @@ def pinned_context(host, port, fingerprint_hex):
 ## ۳) چرخهٔ اتصال استاندارد عامل (M0 ایجنت دسترسی)
 
 ```bash
-set -a; . /home/z/my-project/parastoo/.secrets/access-agent.env; set +a
+set -a; . /home/z/my-project/repos/parastoo/.secrets/access-agent.env; set +a
 # ۱) سلامت
 curl -sk "$ACCESS_AGENT_URL/healthz"
 # ۲) وضعیت هاست
