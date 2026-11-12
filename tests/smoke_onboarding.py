@@ -153,7 +153,7 @@ def main() -> int:
     # ---------- سمت عامل: نخستین تراکنش فقط‌خواندنی ----------
     c, b = req("GET", "/api/agent/onboarding")
     ch("onboarding بدون توکن 200", c == 200 and b.get("ok") is True)
-    ch("onboarding: پروتکل 0.8", b.get("protocol") == "onboarding/0.8")
+    ch("onboarding: پروتکل 0.8.1", b.get("protocol") == "onboarding/0.8.1")
     ch("onboarding: بدون iid → invite_required",
        b.get("invite_required") is True and "pairing" not in b)
     ch("onboarding: هیچ توکنی در پاسخ نیست",
@@ -176,6 +176,8 @@ def main() -> int:
     c, tok = req("POST", "/api/agent/onboard", body={"onboard_code": code})
     ch("کد درست → توکن موقت", c == 200 and tok.get("agent_token", "").startswith("aagx_"))
     TOK = tok.get("agent_token", "")
+    ch("فیلد token همان agent_token است (v0.8.1)",
+       tok.get("token") == TOK and TOK.startswith("aagx_"))
     ch("توکن موقت انقضا دارد", bool(tok.get("expires")))
     c, b = req("POST", "/api/agent/onboard", body={"onboard_code": code})
     ch("استفادهٔ مجدد از کد → 401 (یک‌بارمصرف)", c == 401)

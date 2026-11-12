@@ -299,10 +299,21 @@ def revoke_agent_session(presented: str) -> bool:
     """خروج خودِ عامل از نشست خودش (پایان مکالمه). True اگر نشستی پاک شد."""
     if not presented:
         return False
-    h = sha256_hex(presented)
+    return revoke_agent_session_by_sha(sha256_hex(presented))
+
+
+def revoke_agent_session_by_sha(sha: str) -> bool:
+    """ابطال نشست عامل با هش (فقط داخلی) — v0.8.1: چرخش توکنِ ادعای جفت‌سازی.
+
+    برداشتِ تکرارپذیرِ v0.8.1 پیش از ساخت توکن تازه، نشستِ پیشینِ همان ادعا
+    را با هشش باطل می‌کند تا در هر لحظه حداکثر یک توکن زنده به هر ادعا
+    وصل باشد. مقدار خام توکن هرگز ورودی این تابع نیست — فقط هش."""
+    if not sha:
+        return False
     data = load_agent_sessions()
     live = _prune_sessions(data.get("sessions", []))
-    kept = [s for s in live if not hmac.compare_digest(h, s.get("sha", ""))]
+    kept = [s for s in live
+            if not hmac.compare_digest(sha, str(s.get("sha", "")))]
     if len(kept) == len(live):
         return False
     data["sessions"] = kept
@@ -654,15 +665,22 @@ def approve_pairing_code(code: str, actor: str = "admin", ip: str = "") -> dict:
 
 
 def collect_pairing_token(claim_id: str, claim_secret: str) -> dict:
-    """برداشت توکن موقت نشست عامل — فقط یک بار، فقط با راز ادعا.
+    """برداشت توکن موقت نشست عامل — با راز ادعا؛ در پنجرهٔ برداشت تکرارپذیر.
 
-    وضعیت‌ها: pending / approved (+agent_token) / expired (پنجرهٔ تأیید
-    گذشته) / unknown (ناشناخته، مصرف‌شده یا پنجرهٔ برداشت گذشته)."""
+    وضعیت‌ها: pending / approved (+token و agent_token) / expired (پنجرهٔ
+    تأیید گذشته) / unknown (ناشناخته یا پنجرهٔ برداشت گذشته).
+
+    v0.8.1 (درس میدان ۲۰۲۶-۱۱-۱۲): برداشت دیگر «یک‌بارمصرفِ خاموش» نیست —
+    عاملِ چتی که توکن را در سمت خود از دست داد (خرابی ذخیرهٔ محلی، قطع
+    نوبت) بدون دعوت‌نامهٔ تازه از همان claim بازیابی می‌کند. هر poll موفقِ
+    approved، نشستِ پیشینِ همان ادعا را باطل (issued_sha) و توکن تازه
+    می‌دهد؛ در هر لحظه حداکثر یک توکن زنده به این ادعا وصل است. روی دیسک
+    همچنان فقط هش می‌ماند."""
     now = time.time()
     with _PAIRING_LOCK:
         claims = _sweep_claims(_load_claims(), now)
         rec = next((c for c in claims if c.get("id") == claim_id), None)
-        if rec is None or rec.get("consumed"):
+        if rec is None:
             _save_claims(claims)
             return {"ok": True, "status": "unknown"}
         if not hmac.compare_digest(sha256_hex(claim_secret or ""),
@@ -670,13 +688,18 @@ def collect_pairing_token(claim_id: str, claim_secret: str) -> dict:
             _save_claims(claims)
             return {"ok": True, "status": "unknown"}
         if rec.get("approved"):
-            # ادعای تأییدشده اما با پنجرهٔ برداشت گذشته، همین‌جا در جاروب
-            # افتاده و «unknown» گرفته است — رمز تازه لازم است.
-            rec["consumed"] = True
-            _save_claims(claims)
+            # توکنِ همین ادعا: اگر قبلاً صادر شده بود، پیش از ساخت توکن
+            # تازه با هشش باطل می‌شود — در هر لحظه حداکثر یک توکن زنده
+            # به هر ادعا. پنجرهٔ برداشت گذشته را جاروبِ بالا گرفته و
+            # «unknown» برگردانده است — رمز تازه لازم است.
+            if rec.get("issued_sha"):
+                revoke_agent_session_by_sha(str(rec.get("issued_sha")))
             raw, sess = mint_agent_session(origin="pairing",
                                            invited_by=str(rec.get("invited_by", "")))
-            return {"ok": True, "status": "approved", "agent_token": raw,
+            rec["issued_sha"] = sha256_hex(raw)
+            _save_claims(claims)
+            return {"ok": True, "status": "approved", "token": raw,
+                    "agent_token": raw,
                     "expires": sess.get("expires", "")}
         if now > rec.get("created_ts", 0.0) \
                 + (rec.get("approve_window_s") or PAIRING_APPROVE_WINDOW_S):

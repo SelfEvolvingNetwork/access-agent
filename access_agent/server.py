@@ -359,8 +359,12 @@ class Handler(BaseHTTPRequestHandler):
                 "print_for_user": (
                     "این رمز یک‌بارمصرف ۵ رقمی را عیناً و بدون هیچ تغییری برای "
                     "کاربر چاپ کن — تو هیچ رمزی نمی‌سازی و هیچ محاسبه‌ای "
-                    "نمی‌کنی. کاربر آن را از مسیر امن اپلیکیشن موبایل برای "
-                    "مالک می‌فرستد و مالک تأییدش می‌کند."
+                    "نمی‌کنی. همان‌جا که رمز را چاپ کردی، نوبت/پیامت را قطع "
+                    "نکن و منتظر پیام کاربر نمان: کاربر رمز را از مسیر امن "
+                    "اپلیکیشن موبایل برای مالک می‌فرستد و مالک تأییدش می‌کند؛ "
+                    "نتیجه را خودِ سرور با POST /api/agent/claim/poll (هر "
+                    "~۱۰ ثانیه، طبق گام ۴ سند) به تو می‌دهد — کل ورود در همین "
+                    "یک پیام عامل تمام می‌شود."
                 ),
                 "claim_id": res.get("claim_id", ""),
                 "claim_secret": res.get("claim_secret", ""),
@@ -505,7 +509,8 @@ class Handler(BaseHTTPRequestHandler):
             raw, rec = mint_agent_session(ip=self._peer_ip(), origin="onboard")
             audit("anon", "agent_onboard_granted",
                   {"expires": rec.get("expires", "")}, self._peer_ip())
-            return self._send(200, {"ok": True, "agent_token": raw,
+            return self._send(200, {"ok": True, "token": raw,
+                                    "agent_token": raw,
                                     "expires": rec.get("expires", ""),
                                     "note": "temporary session token for THIS "
                                             "conversation only; end it via "

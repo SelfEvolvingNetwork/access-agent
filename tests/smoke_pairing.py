@@ -152,8 +152,8 @@ def main() -> int:
 
     # ---------- سند آشناسازی بدون iid: فقط دستورالعمل ----------
     c, b = req("GET", "/api/agent/onboarding")
-    ch("onboarding بدون iid → 200 و پروتکل 0.8",
-       c == 200 and b.get("protocol") == "onboarding/0.8")
+    ch("onboarding بدون iid → 200 و پروتکل 0.8.1",
+       c == 200 and b.get("protocol") == "onboarding/0.8.1")
     ch("onboarding بدون iid → invite_required=True",
        b.get("invite_required") is True)
     ch("onboarding: بدون iid هیچ رمزی نمی‌دهد", "pairing" not in b)
@@ -162,6 +162,13 @@ def main() -> int:
     sf = b.get("session_flow", {})
     ch("onboarding: جریان get_code/relay/poll دارد",
        {"2_get_code", "3_relay_by_user", "4_poll"} <= set(sf))
+    ch("onboarding: get_code → poll در همان نوبت (تک‌پیامی)",
+       "قطع نکن" in str(sf.get("2_get_code", {}).get("note", "")))
+    ch("onboarding: relay → نتیجه از سرور، نه کاربر",
+       "نه کاربر" in str(sf.get("3_relay_by_user", "")))
+    ch("onboarding: poll → فیلد token و برداشت تکرارپذیر",
+       "فیلد token" in str(sf.get("4_poll", {}).get("note", ""))
+       and "تکرارپذیر" in str(sf.get("4_poll", {}).get("note", "")))
     doc_s = json.dumps(b, ensure_ascii=False)
     ch("onboarding: هیچ مقدار توکنی در پاسخ نیست",
        re.search(r"aagx_[0-9a-f]{48}", doc_s) is None
@@ -190,9 +197,11 @@ def main() -> int:
     ch("invite ادمین با for=رضا → 200", c == 200 and b.get("ok") is True)
     inv = b.get("invite", "")
     ch("invite: invited_by در پاسخ JSON هست", b.get("invited_by") == "رضا")
-    ch("invite: متن بلند با آدرس کامل دارد",
-       len(inv) > 300 and "https://203.0.113.7:9999/api/agent/onboarding?iid=inv_" in inv)
-    ch("invite: به نام کاربر صادر شده", "رضا" in inv)
+    ch("invite: آدرس کامل با آدرس دعوت دارد",
+       len(inv) > 200 and "https://203.0.113.7:9999/api/agent/onboarding?iid=inv_" in inv)
+    ch("invite: متن سادهٔ v0.8.1 است (بدون برچسب کاربر/نسخه)",
+       "سرویس پرستو" in inv and "رضا" not in inv
+       and "هش گواهی TLS" in inv and "access-agent" not in inv)
     m = re.search(r"\?iid=(inv_[0-9a-f]{24})", inv)
     ch("invite: شناسهٔ دعوت inv_ با ۲۴ هگز است", bool(m))
     IID = m.group(1) if m else ""
@@ -212,6 +221,9 @@ def main() -> int:
     ch("پاسخ برچسب کاربر دعوت را می‌دهد", p.get("invited_by") == "رضا")
     ch("پاسخ دستور چاپ بدون محاسبه را می‌دهد",
        "چاپ" in str(p.get("print_for_user", "")))
+    ch("پاسخ دستور چاپ، poll در همان نوبت را هم می‌گوید",
+       "claim/poll" in str(p.get("print_for_user", ""))
+       and "قطع" in str(p.get("print_for_user", "")))
     CID, SEC = str(p.get("claim_id", "")), str(p.get("claim_secret", ""))
     ch("claim_id/claim_secret در پاسخ است",
        CID.startswith("acl_") and SEC.startswith("aclsk_"))
@@ -256,9 +268,11 @@ def main() -> int:
        c == 200 and b.get("ok") is True and b.get("invited_by") == "رضا")
 
     c, b = poll(CID, SEC)
-    ch("poll پس از تأیید → approved + توکن aagx_",
-       c == 200 and b.get("status") == "approved" and b.get("agent_token", "").startswith("aagx_"))
-    TOK = b.get("agent_token", "")
+    ch("poll پس از تأیید → approved + توکن aagx_ در فیلد token",
+       c == 200 and b.get("status") == "approved"
+       and b.get("token", "").startswith("aagx_"))
+    TOK = b.get("token", "")
+    ch("agent_token همان توکن است (سازگاری)", b.get("agent_token") == TOK)
     ch("توکن انقضا دارد", bool(b.get("expires")))
 
     # ---------- رکورد نشست (پیش از پایانش): origin=pairing + invited_by ----------
@@ -267,7 +281,15 @@ def main() -> int:
     ch("نشست برچسب invited_by دارد", "رضا" in sess_txt)
 
     c, b = poll(CID, SEC)
-    ch("برداشت دوم → unknown (یک‌بارمصرف)", c == 200 and b.get("status") == "unknown")
+    ch("برداشت دوم در پنجره → approved با توکن تازه (v0.8.1)",
+       c == 200 and b.get("status") == "approved"
+       and b.get("token", "").startswith("aagx_")
+       and b.get("token", "") != TOK)
+    TOK2 = b.get("token", "")
+    c, b = req("GET", "/api/status", token=TOK)
+    ch("توکن پیشینِ همان ادعا باطل شده → 401", c == 401)
+    c, b = req("GET", "/api/status", token=TOK2)
+    ch("توکن تازه کار می‌کند → 200", c == 200)
     c, b = req("POST", "/api/admin/agent-approve", token=ADMIN, body={"code": CODE})
     ch("تأیید دوباره همان رمز → 404 (ادعا مصرف شده)", c == 404)
 
@@ -277,15 +299,15 @@ def main() -> int:
        c == 404 and b.get("error") == "unknown_invite")
 
     # ---------- توکن جفت‌شده مثل عامل رفتار می‌کند ----------
-    c, b = req("GET", "/api/status", token=TOK)
+    c, b = req("GET", "/api/status", token=TOK2)
     ch("status با توکن جفت‌شده 200", c == 200 and b.get("ok"))
-    c, b = req("GET", "/api/admin/audit", token=TOK)
+    c, b = req("GET", "/api/admin/audit", token=TOK2)
     ch("توکن جفت‌شده روی مسیر ادمین → 403", c == 403)
-    c, b = req("POST", "/api/exec", token=TOK, body={"cmd": "echo pairing-ok"})
+    c, b = req("POST", "/api/exec", token=TOK2, body={"cmd": "echo pairing-ok"})
     ch("exec با توکن جفت‌شده 200", c == 200 and b.get("exit_code") == 0)
-    c, b = req("POST", "/api/agent/session/end", token=TOK, body={})
+    c, b = req("POST", "/api/agent/session/end", token=TOK2, body={})
     ch("پایان نشست 200", c == 200 and b.get("session_removed") is True)
-    c, b = req("GET", "/api/status", token=TOK)
+    c, b = req("GET", "/api/status", token=TOK2)
     ch("توکن پس از پایان → 401", c == 401)
 
     # ---------- دعوت بدون برچسب (خودِ مالک) ----------
@@ -305,7 +327,15 @@ def main() -> int:
 
     # ---------- ttl_h خارج از محدوده → محدود می‌شود ----------
     c, b = req("GET", "/api/admin/invite?for=x&ttl_h=99999", token=ADMIN)
-    ch("ttl_h=99999 → به ۱۶۸ ساعت محدود شد", c == 200 and "تا 168 ساعت" in b.get("invite", ""))
+    exp_iso = str(b.get("expires", ""))
+    try:
+        from datetime import datetime
+        exp_ts = datetime.fromisoformat(exp_iso).timestamp()
+    except Exception:
+        exp_ts = 0.0
+    ch("ttl_h=99999 → به ۱۶۸ ساعت محدود شد (پاسخ expires)",
+       c == 200 and time.time() + 167 * 3600 <= exp_ts
+       and exp_ts <= time.time() + 169 * 3600)
 
     # ---------- کلید اضطراری مالک: ابطال همهٔ نشست‌ها ----------
     c, b = req("GET", "/api/admin/invite?for=" + urllib.parse.quote("sara"), token=ADMIN)
@@ -315,7 +345,7 @@ def main() -> int:
     req("POST", "/api/admin/agent-approve", token=ADMIN, body={"code": CODE3})
     c, b = poll(str(b.get("pairing", {}).get("claim_id", "")),
                 str(b.get("pairing", {}).get("claim_secret", "")))
-    TOK2 = b.get("agent_token", "")
+    TOK2 = b.get("token", "")
     ch("جفت‌سازی سوم (sara) موفق", b.get("status") == "approved" and TOK2.startswith("aagx_"))
     c, b = req("POST", "/api/admin/revoke-agent-sessions", token=ADMIN, body={})
     ch("ابطال همهٔ نشست‌ها → removed>=1", c == 200 and b.get("removed", 0) >= 1)
@@ -334,7 +364,8 @@ def main() -> int:
     ch("audit: مقدار رمز هرگز لاگ نشده",
        CODE not in al and CODE2 not in al and CODE3 not in al)
     ch("audit: مقدار iid هرگز لاگ نشده", IID not in al and IID2 not in al)
-    ch("audit: مقدار توکن هرگز لاگ نشده", TOK not in al and TOK2 not in al)
+    ch("audit: مقدار توکن هرگز لاگ نشده",
+       TOK not in al and TOK2 not in al)
     ch("audit: برچسب کاربر (غیرمخفی) در تأیید هست", "رضا" in al)
 
     # ---------- هستهٔ هات: اندپوینت‌های جفت‌سازی ----------
