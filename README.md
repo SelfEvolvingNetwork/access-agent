@@ -133,7 +133,14 @@ sudo access-agent rotate-admin-token     # توکن ادمین جدید؛ قدی
 sudo access-agent set-github-token ghp_xxx   # تعویض پات (اعتبارسنجی best-effort)
 sudo access-agent handoff                 # متن آمادهٔ تحویل به عامل هوش مصنوعی — v0.1.3
 sudo access-agent audit 30               # دم لاگ audit
+sudo access-agent autoupdate status      # وضعیت خودآپدیت سمت سرور — v0.8.3
+sudo access-agent autoupdate run         # اجرای فوری همان اسکریپتی که تایمر اجرا می‌کند — v0.8.3
+sudo access-agent autoupdate off         # خاموشی تایمر خودآپدیت (پیش‌فرض: روشن هر ~۱۰ دقیقه) — v0.8.3
 ```
+
+## خودآپدیت سمت سرور (v0.8.3)
+
+تایمر `access-agent-update.timer` (پیش‌فرض مسلح، هر ~۱۰ دقیقه) قرارداد §۸ پروتکل را headless اجرا می‌کند: مانیفست دو-کاناله + sha256 سخت‌گیر + گارد downgrade + تعویق حین lifecycle پرستو + همان `install.sh` بدون RESET_TOKENS. **گارد پیوستگی هویت:** آدرس ضبط‌شده (IP/پورت) و گواهی TLS هویت سرورند نه نسخه — مسیر ارتقا آدرس را هرگز با تشخیص مجدد بازنویسی نمی‌کند و موتور پس از هر نصب گواهی/آدرس/نسخه را با snapshot قبل از نصب راستی‌آزمایی می‌کند؛ هر دریفت = rollback خودکار (کد + config + TLS از بکاپ یک-نسلی). تاریخچهٔ تلاش‌ها در `/etc/access-agent/updates.jsonl` است و `/api/status` آخرین ردیفش را با کلید `self_update` آینه می‌کند. جزئیات: `docs/AGENT_PROTOCOL.fa.md` §۸-۱۰/۱۱.
 
 ## حذف کامل
 

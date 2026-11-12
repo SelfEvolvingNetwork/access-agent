@@ -178,6 +178,13 @@ def host_status() -> dict:
             parastoo_path = p.read_text(encoding="utf-8").strip().splitlines()[0]
         except Exception:
             parastoo_path = ""
+    self_update = None  # v0.8.3 — tail of the server-side self-update history
+    try:
+        rows = (home() / "updates.jsonl").read_text(encoding="utf-8").strip().splitlines()
+        if rows:
+            self_update = json.loads(rows[-1])
+    except Exception:
+        self_update = None
     return {
         "ok": True,
         "service": "access-agent",
@@ -195,6 +202,7 @@ def host_status() -> dict:
         "github_token_stored": bool(stored_token()),
         "agent_realm_enabled": bool(load_tokens().get("agent_sha", "")),
         "agent_realm_paused": bool(load_state().get("agent_paused")),
+        "self_update": self_update,
     }
 
 

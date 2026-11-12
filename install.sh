@@ -54,6 +54,13 @@ die()  { echo -e "${RED} error:${NC} $*" >&2; exit 1; }
 [ "$(id -u)" -eq 0 ] || die "run as root:  sudo bash install.sh $SRC_DIR"
 [ -f "$SRC_DIR/access_agent/server.py" ] || die "invalid SRC_DIR: $SRC_DIR"
 
+# v0.8.3 — single-writer lock: the mobile-app SSH path and the server-side
+# self-update timer must never install concurrently (LESSONS timer-race lesson).
+if command -v flock >/dev/null 2>&1; then
+  exec 9>/run/access-agent-install.lock
+  flock -w 300 9 || die "another install/update is running (lock: /run/access-agent-install.lock)"
+fi
+
 # ---------- 0) detect runtime facts ----------
 PYBIN="$(command -v python3)"
 HOSTNAME_BIN="$(hostname 2>/dev/null || echo server)"
@@ -141,7 +148,8 @@ chmod 700 "$ETC"
 if [ "$FRESH" = "1" ]; then
   PORT="${ACCESS_AGENT_PORT:-$(pick_free_port)}"
   case "$PORT" in ''|*[!0-9]*) die "ACCESS_AGENT_PORT must be numeric";; esac
-  IP="$(detect_ip)"
+  # v0.8.3: an explicit operator override beats every probe (exotic hosts).
+  IP="${ACCESS_AGENT_IP:-$(detect_ip)}"
   # v0.2.1: a provisioning client (e.g. Parastoo Mobile) may generate the tokens
   # on-device and pass them via env — such tokens are NEVER printed back.
   ADMIN_TOKEN="${ACCESS_AGENT_ADMIN_TOKEN:-}"
@@ -178,7 +186,31 @@ if [ "$FRESH" = "1" ]; then
 else
   PORT="$("$PYBIN" -c "import json;print(json.load(open('$ETC/config.json'))['port'])" 2>/dev/null || echo "")"
   if [ -z "$PORT" ]; then warn "config.json missing — cannot resolve port"; exit 1; fi
-  IP="$(detect_ip)"
+  # v0.8.3 — IP CONTINUITY (the field bug behind the owner's warning
+  # «آی‌پی لوکال به‌جای آی‌پی اصلی سرور»): the recorded address is SERVER
+  # IDENTITY, not version (mirror of the §۲.۱ cert rule). The old code
+  # re-ran detect_ip on every upgrade; on Docker-heavy hosts a transient
+  # probe result (172.22.0.1 / 127.0.0.1) overwrote the real public IP in
+  # config.json — ACCESS_URL, the handoff block and every invite pointed at
+  # an unreachable address and NO client (mobile app / AI agent) could
+  # connect. Rules now: (1) an explicit ACCESS_AGENT_IP wins (operator moved
+  # the server — deliberate change); (2) otherwise keep the recorded value;
+  # (3) repair ONLY when the recorded value is empty/private AND the fresh
+  # detection is strictly PUBLIC — a recorded value is never degraded.
+  OLD_IP="$("$PYBIN" -c "import json;print(json.load(open('$ETC/config.json')).get('ip',''))" 2>/dev/null || true)"
+  if [ -n "${ACCESS_AGENT_IP:-}" ]; then
+    IP="$ACCESS_AGENT_IP"
+  elif [ -z "$OLD_IP" ] || is_private_ip "$OLD_IP"; then
+    CAND="$(detect_ip)"
+    if [ -n "$CAND" ] && ! is_private_ip "$CAND"; then
+      IP="$CAND"
+      ok "recorded address repaired: ${OLD_IP:-<missing>} -> $IP (strictly public)"
+    else
+      IP="${OLD_IP:-$CAND}"
+    fi
+  else
+    IP="$OLD_IP"
+  fi
   # regenerate TLS only if missing
   if [ ! -f "$ETC/tls/cert.pem" ] || [ ! -f "$ETC/tls/key.pem" ]; then
     mkdir -p "$ETC/tls"
@@ -209,6 +241,16 @@ fi
 
 # ---------- 2) code ----------
 say "Installing code to $OPT ..."
+# v0.8.3 — one-generation backup for self-update rollback: code + config +
+# TLS (secrets/tokens live elsewhere in $ETC and are never backed up here).
+# The backup is refreshed at the START of every install, so a failed update
+# always rolls back to the PREVIOUS WORKING generation — never to a fossil
+# from an older era (the stale-backup hazard the r24 engine left behind).
+rm -rf "$OPT/.prev-access_agent" "$OPT/.prev-tls"
+cp -a "$OPT/access_agent" "$OPT/.prev-access_agent" 2>/dev/null || true
+cp -f "$ETC/config.json" "$OPT/.prev-config.json" 2>/dev/null || true
+cp -a "$ETC/tls" "$OPT/.prev-tls" 2>/dev/null || true
+chmod 700 "$OPT/.prev-access_agent" "$OPT/.prev-tls" 2>/dev/null || true
 rm -rf "$OPT/access_agent"
 cp -r "$SRC_DIR/access_agent" "$OPT/access_agent"
 rm -rf "$OPT/access_agent/__pycache__"
@@ -226,6 +268,19 @@ if [ -f "$SRC_DIR/deploy/access-agent-cli.sh" ]; then
   mkdir -p "$(dirname "$CLI_BIN")"   # v0.2.1: destination dir may not exist yet
   cp "$SRC_DIR/deploy/access-agent-cli.sh" "$CLI_BIN"
   chmod 755 "$CLI_BIN"
+fi
+
+# v0.8.3 — server-side self-updater travels WITH the code (end of the frozen-
+# engine era: main lost the engine once and the live timer kept running a
+# fossil from bridge-r24 — audit 2026-11-12). rm+cp = NEW inode on purpose:
+# a running engine keeps reading its old (unlinked) fd; cp -f would rewrite
+# the live inode mid-execution and corrupt the running script (LESSONS
+# parastoo: inode-new replacement).
+if [ -f "$SRC_DIR/deploy/self-update.sh" ]; then
+  mkdir -p "$OPT/deploy"
+  rm -f "$OPT/deploy/self-update.sh"
+  cp "$SRC_DIR/deploy/self-update.sh" "$OPT/deploy/self-update.sh"
+  chmod 700 "$OPT/deploy/self-update.sh"
 fi
 
 # v0.8.2 — in-system data rotation (owner decree 2026-11-12, «harmful update
@@ -301,6 +356,28 @@ if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
     systemctl start "$SERVICE"
   fi
   ok "Service started (Restart=always, independent of Docker)."
+  # v0.8.3 — refresh the self-update timer units idempotently; the engine
+  # and its units stay in sync with the code from now on. Owner's arming
+  # choice is PRESERVED: enabled stays enabled, an explicit `autoupdate
+  # off` stays off; a server that never had the timer gets it armed
+  # (default-on per owner decree 2026-11-11).
+  if [ -f "$SRC_DIR/deploy/access-agent-update.service" ] \
+     && [ -f "$SRC_DIR/deploy/access-agent-update.timer" ] \
+     && [ -f "$OPT/deploy/self-update.sh" ]; then
+    TIMER_STATE="$(systemctl is-enabled access-agent-update.timer 2>/dev/null || echo not-found)"
+    sed -e "s#@OPT@#$OPT#g" -e "s#@ETC@#$ETC#g" \
+      "$SRC_DIR/deploy/access-agent-update.service" \
+      > "${UNIT_DIR}/access-agent-update.service"
+    cp -f "$SRC_DIR/deploy/access-agent-update.timer" "${UNIT_DIR}/access-agent-update.timer"
+    systemctl daemon-reload
+    case "$TIMER_STATE" in
+      enabled)  ok "Self-update timer refreshed (staying armed, ~10min)." ;;
+      disabled) ok "Self-update timer refreshed (staying OFF — owner disarmed it)." ;;
+      *) systemctl enable --now access-agent-update.timer >/dev/null 2>&1 \
+           && ok "Self-update timer armed (every ~10min)." \
+           || warn "Self-update timer NOT armed — manual: sudo systemctl enable --now access-agent-update.timer" ;;
+    esac
+  fi
 else
   warn "systemd not available — starting via nohup (survives logout, not reboot)."
   pkill -f "access_agent.server" 2>/dev/null || true
@@ -365,7 +442,8 @@ REPORT="$ETC/install-report.txt"
   echo "SECRETS_DIR:     $ETC/secrets (chmod 600)"
   echo "AUDIT_LOG:       $ETC/audit/audit.jsonl (append-only)"
   echo "OWNER CLI:       access-agent status | url | invite | approve <code> | handoff | rotate-agent-token | revoke-agent-token | revoke-agent-sessions | set-github-token <token> | set-github-app <id> <pem> | test-github-app"
-  echo "INVITE:          sudo access-agent invite   # URL + cert hash only — agent makes its own 5-digit code; confirm it with:  sudo access-agent approve <code>"
+  echo "INVITE:          sudo access-agent invite   # URL + cert hash only — the server makes the 5-digit code; confirm it with:  sudo access-agent approve <code>"
+  echo "SELF-UPDATE:     timer access-agent-update.timer (~10min) — on/off/run/status:  sudo access-agent autoupdate ..."
   echo "SERVICE:         systemctl status $SERVICE --no-pager"
   echo "UNINSTALL:       curl -fsSL $ORG_REPO_URL/uninstall.sh | sudo bash"
   echo "============================================================"

@@ -12,6 +12,7 @@ import hashlib  # noqa: E402
 import json
 import os
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -183,6 +184,60 @@ def run_all() -> None:
            _priv("100.64.0.1") and _priv("100.127.255.3") and not _priv("100.128.0.1") and not _priv("100.63.255.255"))
         ch("is_private_ip: IP عمومی → عمومی",
            not _priv("193.151.142.128") and not _priv("8.8.8.8"))
+
+    # ---------- v0.8.3: IP CONTINUITY — رگرسیون باگ میدان «آی‌پی لوکال به‌جای
+    # آی‌پی اصلی سرور» (۲۰۲۶-۱۱-۱۰): مسیر ارتقا دیگر IP ضبط‌شده را با تشخیص
+    # مجدد بازنویسی نمی‌کند؛ بلوک واقعی install.sh را استخراج و اجرا می‌کنیم
+    # تا regression روی خود کد پین شود (نه فقط grep). ----------
+    ipcont = re.search(
+        r"^ *# v0\.8\.3 — IP CONTINUITY.*?(?=^ *# regenerate TLS only if missing)",
+        inst, re.S | re.M)
+    ch("install.sh: بلوک پیوستگی IP موجود است", ipcont is not None)
+    if ipcont:
+        # بلوک واقعی را به اسکریپت مستقل تبدیل می‌کنیم (کم‌کردن تورفتگی)
+        block = "\n".join(
+            (line[2:] if line.startswith("  ") else line)
+            for line in ipcont.group(0).splitlines())
+
+        def _run_ipcont(recorded: str, detect: str,
+                       env_ip: str = "") -> tuple[str, str]:
+            """بلوک واقعی install.sh را با stubها اجرا می‌کند؛ خروجی: IP نهایی."""
+            d = Path(tempfile.mkdtemp(prefix="aa-ipcont-"))
+            (d / "config.json").write_text(
+                json.dumps({"ip": recorded, "port": 12345, "version": "9.9.9"}),
+                encoding="utf-8")
+            sh = d / "ipcont.sh"
+            sh.write_text(
+                "is_private_ip() {\n"
+                "  printf '%s' \"${1:-}\" | grep -qE '^(10\\.|127\\.|169\\.254\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.|100\\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\\.|0\\.|22[4-9]\\.|2[3-5][0-9]\\.)'\n"
+                "}\n"
+                "detect_ip() { printf '%s\\n' \"" + detect + "\"; }\n"
+                "ok() { :; }\n"
+                "PYBIN=\"$(command -v python3)\"\n"
+                f"ETC=\"{d}\"\n"
+                f"ACCESS_AGENT_IP=\"{env_ip}\"\n"
+                + block + "\n"
+                "printf '%s\\n' \"$IP\"\n", encoding="utf-8")
+            r = subprocess.run(["bash", str(sh)], capture_output=True,
+                               text=True, timeout=30)
+            shutil.rmtree(d, ignore_errors=True)
+            return r.stdout.strip(), r.stderr[:200]
+
+        got, _err = _run_ipcont("193.151.142.128", "172.22.0.1")
+        ch("پیوستگی IP: آدرس عمومیِ ضبط‌شده با تشخیصِ لوکال بازنویسی نمی‌شود (باگ میدان)",
+           got == "193.151.142.128", f"got={got!r}")
+        got, _err = _run_ipcont("172.22.0.1", "193.151.142.128")
+        ch("پیوستگی IP: آدرس خصوصیِ ضبط‌شده با کاندید عمومی تعمیر می‌شود",
+           got == "193.151.142.128", f"got={got!r}")
+        got, _err = _run_ipcont("172.22.0.1", "172.22.0.1")
+        ch("پیوستگی IP: بدون کاندید بهتر، مقدار ضبط‌شده می‌ماند (تنزل ممنوع)",
+           got == "172.22.0.1", f"got={got!r}")
+        got, _err = _run_ipcont("", "193.151.142.128")
+        ch("پیوستگی IP: مقدار غایب با تشخیص عمومی پر می‌شود",
+           got == "193.151.142.128", f"got={got!r}")
+        got, _err = _run_ipcont("193.151.142.128", "172.22.0.1", env_ip="5.6.7.8")
+        ch("پیوستگی IP: ACCESS_AGENT_IP صریح اپراتور بر همه غالب است",
+           got == "5.6.7.8", f"got={got!r}")
 
     # ---------- exec ----------
     code, b = req("POST", "/api/exec", token=AGENT, body={"cmd": "echo hello-agent"})

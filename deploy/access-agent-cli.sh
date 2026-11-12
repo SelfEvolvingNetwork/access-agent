@@ -28,6 +28,9 @@
 #                            response names the invite's user)
 #    revoke-agent-sessions    kill ALL temporary agent pairing sessions
 #    audit [N]               tail of the audit log (default 30)
+#    autoupdate on|off       arm/disarm the server-side self-update timer (v0.8.3)
+#    autoupdate run          run a self-update right now (same script the timer runs)
+#    autoupdate status       timer state + installed version + last update history row
 # =============================================================
 set -euo pipefail
 
@@ -249,7 +252,34 @@ PY
     N="${2:-30}"
     tail -n "$N" "$ETC/audit/audit.jsonl" 2>/dev/null || echo "(empty audit log)"
     ;;
+  autoupdate) # v0.8.3 — server-side self-update (owner decree 2026-11-11)
+    SUB="${2:-status}"
+    case "$SUB" in
+      on)
+        systemctl enable --now access-agent-update.timer >/dev/null 2>&1 \
+          && ok "self-update timer armed (~10min)." \
+          || die "failed to arm access-agent-update.timer"
+        ;;
+      off)
+        systemctl disable --now access-agent-update.timer >/dev/null 2>&1 \
+          && ok "self-update timer disarmed (mobile-app path stays available)." \
+          || die "failed to disarm access-agent-update.timer"
+        ;;
+      run)
+        [ -x "$OPT_DIR/deploy/self-update.sh" ] || die "self-update.sh not installed yet — upgrade the bridge first"
+        bash "$OPT_DIR/deploy/self-update.sh"
+        ;;
+      status)
+        echo "timer:     $(systemctl is-enabled access-agent-update.timer 2>/dev/null || echo disabled) / $(systemctl is-active access-agent-update.timer 2>/dev/null || echo inactive)"
+        echo "installed: $(python3 -c "import json;print(json.load(open('$ETC/config.json')).get('version','?'))" 2>/dev/null || echo '?')"
+        if [ -f "$ETC/updates.jsonl" ]; then echo "last:      $(tail -1 "$ETC/updates.jsonl")"; else echo "last:      (no update history)"; fi
+        ;;
+      *)
+        die "usage: access-agent autoupdate on|off|run|status"
+        ;;
+    esac
+    ;;
   help|*)
-    sed -n '3,31p' "$0" | sed 's/^# \{0,2\}//'
+    sed -n '3,34p' "$0" | sed 's/^# \{0,2\}//'
     ;;
 esac

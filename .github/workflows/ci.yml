@@ -24,10 +24,14 @@ jobs:
           bash -n install.sh
           bash -n uninstall.sh
           bash -n deploy/access-agent-cli.sh
+          bash -n deploy/self-update.sh
           bash -n scripts/pack-release.sh
 
       - name: تست دودی (سرور واقعی روی پورت آزاد، بدون TLS در تست)
         run: python tests/smoke_test.py
+
+      - name: تست دودی خودآپدیت سرور-سمت — گارد downgrade/sha/rollback + پیوستگی هویت (v0.8.3)
+        run: python tests/smoke_selfupdate.py
 
       - name: تست دودی lifecycle پرستو — نقطهٔ صفر + نصب/حذف/نصب مجدد (v0.5.5)
         run: python tests/smoke_lifecycle.py
