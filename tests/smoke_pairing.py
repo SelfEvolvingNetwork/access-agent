@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""تست دودی v0.7.1 — جفت‌سازی عامل با رمز عامل‌ساخته + تأیید انسانی.
+"""تست دودی v0.8 — جفت‌سازی عامل با رمز «سرورساخته» + دعوت کاربر-مند.
 
-جریان کامل، از نگاه هر سه طرف:
-  عامل:  POST /api/agent/claim {code} ← claim_id + claim_secret
-         (رمز را خودش ساخته و در چت برای مالک چاپ کرده است)
-  مالک:  POST /api/admin/agent-approve {code} (پرستو موبایل / SSH)
+جریان کامل، از نگاه هر سه طرف (فرمان مالک 2026-11-12 — بازنگری v0.7.1:
+عامل دیگر رمز نمی‌سازد؛ سرور می‌سازد و عامل فقط چاپ می‌کند):
+  مالک:  GET /api/admin/invite?for=<کاربر> ← دعوت‌نامهٔ بی‌رمز با URL حامل
+         شناسهٔ دعوت (iid) که به نام همان کاربر صادر شده است
+  عامل:  GET /api/agent/onboarding?iid=<iid> ← رمز ۵ رقمی یک‌بارمصرفِ
+         «سرورساخته» + claim_id + claim_secret (هیچ محاسبه‌ای برای عامل نیست؛
+         فقط همان رمز را برای کاربر چاپ می‌کند)
+  کاربر: رمز را از مسیر امن اپلیکیشن موبایل برای مالک می‌فرستد
+  مالک:  POST /api/admin/agent-approve {code} (پرستو موبایل / SSH) — پاسخ
+         برچسب invited_by را می‌دهد تا مالک بداند پای کدام کاربر بوده است
   عامل:  POST /api/agent/claim/poll ← توکن موقت aagx_
          ... کار ... POST /api/agent/session/end
 
-قرمزها: قالب/ضعف رمز، تأیید غلط، برداشت دوباره، سقف ادعا، نرخ‌سنجی،
-انقضای پنجره‌ها، تصادم رمز (قدیمی‌ترین برنده)، audit بدون مقدار رمز.
+قرمزها: iid غلط/مصرف‌شده، بازنشسته‌شدن مسیر عامل‌ساخته (410)، تأیید غلط،
+برداشت دوباره، سقف ادعا، نرخ‌سنجی، انقضای پنجره‌ها، یک دعوت = یک عامل،
+audit بدون مقدار رمز/iid/توکن، فقط هش روی دیسک.
 
 اجرا:  python tests/smoke_pairing.py   (کاملاً آفلاین، بدون TLS در تست)
 """
@@ -27,6 +34,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -82,7 +90,6 @@ os.environ["ACCESS_AGENT_NO_TLS"] = "1"
 
 sys.path.insert(0, str(REPO))
 from access_agent import security  # noqa: E402
-from access_agent.handoff import build_pairing_invite  # noqa: E402
 
 ADMIN = "adm_" + os.urandom(24).hex()
 AGENT = "aa_" + os.urandom(24).hex()   # توکن بلندمدت برای تست 403
@@ -91,7 +98,7 @@ AGENT = "aa_" + os.urandom(24).hex()   # توکن بلندمدت برای تست
     "agent_sha": hashlib.sha256(AGENT.encode()).hexdigest(),
 }), encoding="utf-8")
 (Path(TMP) / "config.json").write_text(json.dumps({
-    "ip": "203.0.113.7", "port": 9999, "version": "0.7.1",
+    "ip": "203.0.113.7", "port": 9999, "version": "0.8.0",
 }), encoding="utf-8")
 (Path(TMP) / "tls").mkdir(exist_ok=True)
 subprocess.run(
@@ -143,50 +150,93 @@ def main() -> int:
         print(server_log.read())
         return 1
 
-    # ---------- سند آشناسازی: دستورالعمل جفت‌سازی از خود سرور ----------
+    # ---------- سند آشناسازی بدون iid: فقط دستورالعمل ----------
     c, b = req("GET", "/api/agent/onboarding")
-    ch("onboarding 200 و پروتکل 0.7.1", c == 200 and b.get("protocol") == "onboarding/0.7.1")
-    ch("onboarding: مدل اعتماد شامل pairing است", "pairing" in b.get("trust_model", {}))
-    ch("onboarding: کانال پایدار توضیح داده شده",
-       "persistent_channel" in b.get("trust_model", {}))
+    ch("onboarding بدون iid → 200 و پروتکل 0.8",
+       c == 200 and b.get("protocol") == "onboarding/0.8")
+    ch("onboarding بدون iid → invite_required=True",
+       b.get("invite_required") is True)
+    ch("onboarding: بدون iid هیچ رمزی نمی‌دهد", "pairing" not in b)
+    ch("onboarding: مدل اعتماد شامل pairing و invite است",
+       {"pairing", "invite"} <= set(b.get("trust_model", {})))
     sf = b.get("session_flow", {})
-    ch("onboarding: جریان claim/ask_human/poll دارد",
-       {"2_claim", "3_ask_human", "4_poll"} <= set(sf))
+    ch("onboarding: جریان get_code/relay/poll دارد",
+       {"2_get_code", "3_relay_by_user", "4_poll"} <= set(sf))
     doc_s = json.dumps(b, ensure_ascii=False)
     ch("onboarding: هیچ مقدار توکنی در پاسخ نیست",
        re.search(r"aagx_[0-9a-f]{48}", doc_s) is None
        and "adm_" not in doc_s and "aclsk_" not in doc_s)
 
-    # ---------- دعوت‌نامهٔ جفت‌سازی: هیچ رمزی در چت نیست ----------
-    invite = build_pairing_invite()
-    ch("دعوت‌نامه: آدرس و هش گواهی دارد",
-       "https://203.0.113.7:9999" in invite and len(invite.split()) > 0)
-    ch("دعوت‌نامه: هیچ کد/توکنی ندارد",
-       "ob_" not in invite and "aa_" not in invite and "adm_" not in invite
-       and "aclsk_" not in invite)
+    # ---------- iid غلط → 404 ----------
+    c, b = req("GET", "/api/agent/onboarding?iid=inv_deadbeef" + "0" * 19)
+    ch("onboarding با iid غلط → 404 unknown_invite",
+       c == 404 and b.get("error") == "unknown_invite")
+    c, b = req("GET", "/api/agent/onboarding?iid=inv_" + "f" * 24 + "&x=y")
+    ch("onboarding با iid غلط + پارامتر اضافه → 404", c == 404)
 
-    # ---------- قالب و ضعف رمز ----------
-    for bad in ("1234", "123456", "abcde", "", "12 45", "١٢٣٤٥"):
-        c, b = req("POST", "/api/agent/claim", body={"code": bad})
-        ch(f"claim با رمز نامعتبر {bad!r} → 400", c == 400 and b.get("error") == "bad_code")
-    for weak in ("12345", "00000", "99999", "54321"):
-        c, b = req("POST", "/api/agent/claim", body={"code": weak})
-        ch(f"claim با رمز ضعیف {weak} → 400 weak_code",
-           c == 400 and b.get("error") == "weak_code")
+    # ---------- مسیر عامل‌ساخته بازنشسته → 410 ----------
+    c, b = req("POST", "/api/agent/claim", body={"code": "82419"})
+    ch("POST /api/agent/claim (عامل‌ساخته) → 410 retired",
+       c == 410 and b.get("error") == "agent_made_codes_retired")
+    c, b = req("POST", "/api/agent/claim", body={"code": "12345"})
+    ch("claim عامل‌ساخته با رمز ضعیف هم → 410 (نه weak_code)", c == 410)
 
-    # ---------- جریان اصلی ----------
-    CODE = "82419"
-    c, b = req("POST", "/api/agent/claim", body={"code": CODE})
-    ch("claim معتبر → 200 با claim_id/secret",
-       c == 200 and b.get("claim_id", "").startswith("acl_")
-       and b.get("claim_secret", "").startswith("aclsk_"))
-    CID, SEC = b.get("claim_id", ""), b.get("claim_secret", "")
-    ch("پنجره‌ها: تأیید ۱۲۰ ثانیه، برداشت ۱۸۰۰ ثانیه",
-       b.get("approve_window_s") == 120 and b.get("pickup_window_s") == 1800)
+    # ---------- دعوت‌نامهٔ کاربر-مند از اپ/ادمین ----------
+    c, b = req("GET", "/api/admin/invite")
+    ch("invite بدون توکن → 401", c == 401)
+    c, b = req("GET", "/api/admin/invite", token=AGENT)
+    ch("invite با توکن عامل → 403", c == 403)
+    c, b = req("GET", "/api/admin/invite?for=" + urllib.parse.quote("رضا"), token=ADMIN)
+    ch("invite ادمین با for=رضا → 200", c == 200 and b.get("ok") is True)
+    inv = b.get("invite", "")
+    ch("invite: invited_by در پاسخ JSON هست", b.get("invited_by") == "رضا")
+    ch("invite: متن بلند با آدرس کامل دارد",
+       len(inv) > 300 and "https://203.0.113.7:9999/api/agent/onboarding?iid=inv_" in inv)
+    ch("invite: به نام کاربر صادر شده", "رضا" in inv)
+    m = re.search(r"\?iid=(inv_[0-9a-f]{24})", inv)
+    ch("invite: شناسهٔ دعوت inv_ با ۲۴ هگز است", bool(m))
+    IID = m.group(1) if m else ""
+    ch("invite: هیچ کد/توکن واقعی ندارد",
+       "ob_" not in inv and "adm_" not in inv and "aclsk_" not in inv
+       and re.search(r"aagx_[0-9a-f]{48}", inv) is None
+       and re.search(r"aa_[0-9a-f]{48}", inv) is None
+       and re.search(r"\?iid=inv_[0-9a-f]{24}", inv) is not None)
+
+    # ---------- عامل: GET با iid → رمز سرورساخته ----------
+    c, b = req("GET", f"/api/agent/onboarding?iid={IID}")
+    ch("onboarding با iid معتبر → 200", c == 200 and b.get("ok") is True)
+    p = b.get("pairing", {})
+    CODE = str(p.get("code", ""))
+    ch("رمز سرورساخته دقیقاً ۵ رقم ASCII است",
+       len(CODE) == 5 and CODE.isascii() and CODE.isdigit())
+    ch("پاسخ برچسب کاربر دعوت را می‌دهد", p.get("invited_by") == "رضا")
+    ch("پاسخ دستور چاپ بدون محاسبه را می‌دهد",
+       "چاپ" in str(p.get("print_for_user", "")))
+    CID, SEC = str(p.get("claim_id", "")), str(p.get("claim_secret", ""))
+    ch("claim_id/claim_secret در پاسخ است",
+       CID.startswith("acl_") and SEC.startswith("aclsk_"))
+    ch("پنجره‌ها: تأیید ۹۰۰ ثانیه (کد از مسیر اپ می‌آید)، برداشت ۱۸۰۰ ثانیه",
+       p.get("approve_window_s") == 900 and p.get("pickup_window_s") == 1800)
+
+    # ---------- فقط هش روی دیسک ----------
     pairing_txt = (Path(TMP) / "pairing.json").read_text(encoding="utf-8")
-    ch("روی دیسک فقط هش است", CODE not in pairing_txt and SEC not in pairing_txt
+    invites_txt = (Path(TMP) / "invites.json").read_text(encoding="utf-8")
+    ch("روی دیسک فقط هش است (رمز/راز/iid)",
+       CODE not in pairing_txt and SEC not in pairing_txt
+       and IID not in pairing_txt and IID not in invites_txt
        and "aclsk_" not in pairing_txt)
 
+    # ---------- GET دوباره با همان iid → رمز تازه (تا پیش از تأیید) ----------
+    c, b2 = req("GET", f"/api/agent/onboarding?iid={IID}")
+    ch("GET دوباره با همان iid → رمز تازه",
+       c == 200 and b2.get("pairing", {}).get("code", "") != CODE)
+
+    # ---------- سقف ادعای هم‌زمان هر IP = ۲ → سومی busy ----------
+    c, b3 = req("GET", f"/api/agent/onboarding?iid={IID}")
+    ch("سومین رمزِ در انتظار از همان IP → 429 busy",
+       c == 429 and b3.get("error") == "busy")
+
+    # ---------- برداشت ----------
     c, b = poll("acl_" + "0" * 24, SEC)
     ch("poll با claim_id غلط → unknown", c == 200 and b.get("status") == "unknown")
     c, b = poll(CID, "aclsk_" + "f" * 48)
@@ -194,6 +244,7 @@ def main() -> int:
     c, b = poll(CID, SEC)
     ch("poll پیش از تأیید → pending", c == 200 and b.get("status") == "pending")
 
+    # ---------- تأیید انسانی ----------
     c, b = req("POST", "/api/admin/agent-approve", token=AGENT, body={"code": CODE})
     ch("توکن عامل نمی‌تواند تأیید کند → 403", c == 403)
     c, b = req("POST", "/api/admin/agent-approve", body={"code": CODE})
@@ -201,17 +252,29 @@ def main() -> int:
     c, b = req("POST", "/api/admin/agent-approve", token=ADMIN, body={"code": "55555"})
     ch("تأیید رمز غلط → 404", c == 404 and b.get("error") == "no_pending_claim")
     c, b = req("POST", "/api/admin/agent-approve", token=ADMIN, body={"code": CODE})
-    ch("تأیید رمز درست → 200 matched", c == 200 and b.get("ok") is True)
+    ch("تأیید رمز درست → 200 با invited_by=رضا",
+       c == 200 and b.get("ok") is True and b.get("invited_by") == "رضا")
 
     c, b = poll(CID, SEC)
     ch("poll پس از تأیید → approved + توکن aagx_",
        c == 200 and b.get("status") == "approved" and b.get("agent_token", "").startswith("aagx_"))
     TOK = b.get("agent_token", "")
     ch("توکن انقضا دارد", bool(b.get("expires")))
+
+    # ---------- رکورد نشست (پیش از پایانش): origin=pairing + invited_by ----------
+    sess_txt = (Path(TMP) / "agent_sessions.json").read_text(encoding="utf-8")
+    ch("نشست جفت‌سازی origin=pairing دارد", '"pairing"' in sess_txt)
+    ch("نشست برچسب invited_by دارد", "رضا" in sess_txt)
+
     c, b = poll(CID, SEC)
     ch("برداشت دوم → unknown (یک‌بارمصرف)", c == 200 and b.get("status") == "unknown")
     c, b = req("POST", "/api/admin/agent-approve", token=ADMIN, body={"code": CODE})
     ch("تأیید دوباره همان رمز → 404 (ادعا مصرف شده)", c == 404)
+
+    # ---------- یک دعوت = یک عامل ----------
+    c, b = req("GET", f"/api/agent/onboarding?iid={IID}")
+    ch("GET با iid مصرف‌شده → 404 (یک دعوت = یک عامل)",
+       c == 404 and b.get("error") == "unknown_invite")
 
     # ---------- توکن جفت‌شده مثل عامل رفتار می‌کند ----------
     c, b = req("GET", "/api/status", token=TOK)
@@ -225,13 +288,35 @@ def main() -> int:
     c, b = req("GET", "/api/status", token=TOK)
     ch("توکن پس از پایان → 401", c == 401)
 
+    # ---------- دعوت بدون برچسب (خودِ مالک) ----------
+    c, b = req("GET", "/api/admin/invite", token=ADMIN)
+    ch("invite بدون for → 200", c == 200 and b.get("invited_by") == "")
+    m2 = re.search(r"\?iid=(inv_[0-9a-f]{24})", b.get("invite", ""))
+    IID2 = m2.group(1) if m2 else ""
+    c, b = req("GET", f"/api/agent/onboarding?iid={IID2}")
+    ch("دعوت بدون برچسب هم رمز می‌دهد (invited_by خالی)",
+       c == 200 and b.get("pairing", {}).get("invited_by", "x") == "")
+    CODE2 = str(b.get("pairing", {}).get("code", ""))
+    c, b = req("POST", "/api/admin/agent-approve", token=ADMIN, body={"code": CODE2})
+    ch("تأیید دعوت بدون برچسب → invited_by خالی",
+       c == 200 and b.get("invited_by", "x") == "")
+    c, b = poll(b.get("claim_id", ""), "")
+    ch("poll با راز غلط → unknown", c == 200 and b.get("status") == "unknown")
+
+    # ---------- ttl_h خارج از محدوده → محدود می‌شود ----------
+    c, b = req("GET", "/api/admin/invite?for=x&ttl_h=99999", token=ADMIN)
+    ch("ttl_h=99999 → به ۱۶۸ ساعت محدود شد", c == 200 and "تا 168 ساعت" in b.get("invite", ""))
+
     # ---------- کلید اضطراری مالک: ابطال همهٔ نشست‌ها ----------
-    c, b = req("POST", "/api/agent/claim", body={"code": "61042"})
-    CID2, SEC2 = b.get("claim_id", ""), b.get("claim_secret", "")
-    req("POST", "/api/admin/agent-approve", token=ADMIN, body={"code": "61042"})
-    c, b = poll(CID2, SEC2)
+    c, b = req("GET", "/api/admin/invite?for=" + urllib.parse.quote("sara"), token=ADMIN)
+    m3 = re.search(r"\?iid=(inv_[0-9a-f]{24})", b.get("invite", ""))
+    c, b = req("GET", f"/api/agent/onboarding?iid={m3.group(1) if m3 else ''}")
+    CODE3 = str(b.get("pairing", {}).get("code", ""))
+    req("POST", "/api/admin/agent-approve", token=ADMIN, body={"code": CODE3})
+    c, b = poll(str(b.get("pairing", {}).get("claim_id", "")),
+                str(b.get("pairing", {}).get("claim_secret", "")))
     TOK2 = b.get("agent_token", "")
-    ch("جفت‌سازی دوم موفق", b.get("status") == "approved" and TOK2.startswith("aagx_"))
+    ch("جفت‌سازی سوم (sara) موفق", b.get("status") == "approved" and TOK2.startswith("aagx_"))
     c, b = req("POST", "/api/admin/revoke-agent-sessions", token=ADMIN, body={})
     ch("ابطال همهٔ نشست‌ها → removed>=1", c == 200 and b.get("removed", 0) >= 1)
     c, b = req("GET", "/api/status", token=TOK2)
@@ -239,107 +324,62 @@ def main() -> int:
     c, b = req("POST", "/api/admin/revoke-agent-sessions", token=AGENT, body={})
     ch("عامل نمی‌تواند نشست‌ها را ابطال کند → 403", c == 403)
 
-    # ---------- تصادم رمز: قدیمی‌ترین ادعا برنده ----------
-    cA, bA = req("POST", "/api/agent/claim", body={"code": "39176"})
-    cB, bB = req("POST", "/api/agent/claim", body={"code": "39176"})
-    ch("دو ادعا با همان رمز ثبت شد", cA == 200 and cB == 200)
-    time.sleep(0.05)
-    c, b = req("POST", "/api/admin/agent-approve", token=ADMIN, body={"code": "39176"})
-    ch("تأیید رمز مشترک → 200", c == 200)
-    c, b = poll(bA.get("claim_id", ""), bA.get("claim_secret", ""))
-    ch("ادعای قدیمی‌تر توکن گرفت", b.get("status") == "approved")
-    c, b = poll(bB.get("claim_id", ""), bB.get("claim_secret", ""))
-    ch("ادعای جدیدتر همچنان pending", b.get("status") == "pending")
-    c, b = req("POST", "/api/admin/agent-approve", token=ADMIN, body={"code": "39176"})
-    ch("تأیید دوباره → ادعای بعدی", c == 200)
-    c, b = poll(bB.get("claim_id", ""), bB.get("claim_secret", ""))
-    ch("ادعای دوم هم توکن گرفت", b.get("status") == "approved")
-
-    # ---------- audit: رویدادها هست، مقدار رمز/توکن هرگز ----------
+    # ---------- audit: رویدادها هست، مقدار رمز/iid/توکن هرگز ----------
     al = (Path(TMP) / "audit" / "audit.jsonl").read_text(encoding="utf-8")
-    for ev in ("agent_pairing_claim", "agent_pairing_claim_refused",
+    for ev in ("agent_onboarding_read", "agent_onboarding_code_issued",
+               "agent_onboarding_refused", "agent_pairing_claim_retired",
                "admin_agent_approve", "agent_pairing_token_issued",
-               "admin_revoke_agent_sessions"):
+               "admin_revoke_agent_sessions", "admin_invite_served"):
         ch(f"audit: {ev} ثبت شده", ev in al)
     ch("audit: مقدار رمز هرگز لاگ نشده",
-       CODE not in al and "39176" not in al and "61042" not in al)
+       CODE not in al and CODE2 not in al and CODE3 not in al)
+    ch("audit: مقدار iid هرگز لاگ نشده", IID not in al and IID2 not in al)
     ch("audit: مقدار توکن هرگز لاگ نشده", TOK not in al and TOK2 not in al)
+    ch("audit: برچسب کاربر (غیرمخفی) در تأیید هست", "رضا" in al)
 
-    # ---------- هستهٔ هات: اندپوینت‌های تازه ----------
+    # ---------- هستهٔ هات: اندپوینت‌های جفت‌سازی ----------
     c, b = req("GET", "/api/admin/app/core-config", token=ADMIN)
     ch("core-config: agent_approve در نقشهٔ اندپوینت‌هاست",
        c == 200 and "/api/admin/agent-approve" in b.get("config_json", ""))
-    ch("core-config: revoke_agent_sessions در نقشه است",
-       "/api/admin/revoke-agent-sessions" in b.get("config_json", ""))
-
-    # ---------- v0.7.2 — دعوت‌نامه از اپ (GET /api/admin/invite) ----------
-    c, b = req("GET", "/api/admin/invite")
-    ch("invite بدون توکن → 401", c == 401)
-    c, b = req("GET", "/api/admin/invite", token=AGENT)
-    ch("invite با توکن عامل → 403", c == 403)
-    c, b = req("GET", "/api/admin/invite", token=ADMIN)
-    inv = b.get("invite", "")
-    ch("invite ادمین → 200 و متن بلند دارد", c == 200 and len(inv) > 200)
-    ch("invite: URL و هش گواهی دارد", "https://203.0.113.7:9999" in inv)
-    ch("invite: هیچ رازی در آن نیست",
-       "aa_" not in inv and "adm_" not in inv and "ob_" not in inv
-       and "aclsk_" not in inv and "aagx_" not in inv)
-    al = (Path(TMP) / "audit" / "audit.jsonl").read_text(encoding="utf-8")
-    ch("audit: admin_invite_served ثبت شده", "admin_invite_served" in al)
-    c, b = req("GET", "/api/admin/app/core-config", token=ADMIN)
-    ch("core-config: agent_invite در نقشه است (revision 4)",
+    ch("core-config: agent_invite در نقشه است",
        "/api/admin/invite" in b.get("config_json", ""))
 
-    # ---------- v0.7.2 — خاستگاه نشست (origin) در رکورد ----------
-    c, b = req("POST", "/api/agent/claim", body={"code": "71538"})
-    CID3, SEC3 = b.get("claim_id", ""), b.get("claim_secret", "")
-    req("POST", "/api/admin/agent-approve", token=ADMIN, body={"code": "71538"})
-    c, b = poll(CID3, SEC3)
-    ch("جفت‌سازی سوم موفق", b.get("status") == "approved")
-    sess_txt = (Path(TMP) / "agent_sessions.json").read_text(encoding="utf-8")
-    ch("نشست جفت‌سازی origin=pairing دارد", '"pairing"' in sess_txt)
-    c, b = req("GET", "/api/status", token=b.get("agent_token", "") or "x")
-    ch("توکن جفت‌شدهٔ سوم کار می‌کند", c == 200)
-
-    # ---------- سقف‌ها و انقضا (فراخوانی مستقیم، خانهٔ دوم) ----------
+    # ---------- لایهٔ امنیت (خانهٔ دوم): انقضا، نرخ، برچسب ----------
     HOME2 = tempfile.mkdtemp(prefix="access-agent-pairing2.")
     real_home = os.environ["ACCESS_AGENT_HOME"]
     os.environ["ACCESS_AGENT_HOME"] = HOME2
     try:
-        r1 = security.mint_pairing_claim("70411", ip="10.9.9.9")
-        r2 = security.mint_pairing_claim("70412", ip="10.9.9.9")
-        r3 = security.mint_pairing_claim("70413", ip="10.9.9.9")
-        ch("سقف ادعای هم‌زمان هر IP = 2 → سومی busy",
-           r1.get("ok") and r2.get("ok")
-           and r3.get("error") == "busy" and r3.get("status") == 429)
+        # برچسب: بیش از ۴۰ نویسه یا نویسهٔ کنترلی → رد به «خالی»
+        ch("برچسب بلند → sanitize به خالی",
+           security.sanitize_invite_label("x" * 41) == "")
+        ch("برچسب با نویسهٔ کنترلی → خالی",
+           security.sanitize_invite_label("a\tb") == "")
+        ch("برچسب فارسی مجاز است", security.sanitize_invite_label("  رضا ") == "رضا")
 
-        # نرخ‌سنجی: پنجرهٔ کوتاه و سقف IP بلندشده در همین فرایند (فقط تست)
-        old_window = security.PAIRING_RATE_WINDOW_S
-        old_per_ip = security.PAIRING_PENDING_PER_IP
-        security.PAIRING_RATE_WINDOW_S = 1
-        security.PAIRING_PENDING_PER_IP = 10
-        try:
-            for i in range(security.PAIRING_RATE_MAX):
-                security.mint_pairing_claim(f"8110{i}", ip="10.8.8.8")
-            rr = security.mint_pairing_claim("81109", ip="10.8.8.8")
-            ch("نرخ‌سنجی: ادعای ششم در پنجره → rate_limited",
-               rr.get("error") == "rate_limited" and rr.get("status") == 429)
-        finally:
-            security.PAIRING_RATE_WINDOW_S = old_window
-            security.PAIRING_PENDING_PER_IP = old_per_ip
+        # انقضای دعوت: دعوت با انقضای گذشته → unknown_invite
+        raw_i, _rec = security.mint_invite("t", ttl_s=300)
+        data = json.loads((Path(HOME2) / "invites.json").read_text(encoding="utf-8"))
+        data["invites"][0]["expires_ts"] = time.time() - 1
+        (Path(HOME2) / "invites.json").write_text(json.dumps(data), encoding="utf-8")
+        r = security.mint_server_pairing(raw_i, ip="10.1.1.1")
+        ch("دعوت منقضی → unknown_invite",
+           r.get("error") == "unknown_invite" and r.get("status") == 404)
 
-        # انقضای پنجرهٔ تأیید (۲ دقیقه → ۱ ثانیه در تست)
-        rc = security.mint_pairing_claim("50617", ip="10.7.7.7", approve_window_s=1)
+        # انقضای پنجرهٔ تأیید (۹۰۰ ثانیه → ۱ ثانیه در تست)
+        raw_j, _ = security.mint_invite("t2", ttl_s=3600)
+        rc = security.mint_server_pairing(raw_j, ip="10.2.2.2", approve_window_s=1)
         time.sleep(1.3)
-        ra = security.approve_pairing_code("50617", actor="t")
+        ra = security.approve_pairing_code(rc.get("code", ""), actor="t")
         ch("انقضای پنجرهٔ تأیید → no_pending_claim",
            ra.get("error") == "no_pending_claim")
-        rp = security.collect_pairing_token(rc.get("claim_id", ""), rc.get("claim_secret", ""))
+        rp = security.collect_pairing_token(rc.get("claim_id", ""),
+                                            rc.get("claim_secret", ""))
         ch("poll پس از انقضای تأیید → expired", rp.get("status") == "expired")
 
-        # انقضای پنجرهٔ برداشت (۳۰ دقیقه → ۰ در تست)
-        rc2 = security.mint_pairing_claim("50618", ip="10.7.7.7")
-        security.approve_pairing_code("50618", actor="t")
+        # انقضای پنجرهٔ برداشت
+        raw_k, _ = security.mint_invite("t3", ttl_s=3600)
+        rc2 = security.mint_server_pairing(raw_k, ip="10.2.2.3")
+        security.approve_pairing_code(rc2.get("code", ""), actor="t")
         old_pickup = security.PAIRING_PICKUP_WINDOW_S
         security.PAIRING_PICKUP_WINDOW_S = -1
         try:
@@ -350,15 +390,36 @@ def main() -> int:
         ch("انقضای پنجرهٔ برداشت → unknown (جاروب شده)",
            rp2.get("status") == "unknown")
 
-        # جاروی دیکشنری نرخ (v0.7.2): با آدرس‌های کهنهٔ بسیار، حافظه نگردد
+        # نرخ‌سنجی: پنجرهٔ کوتاه در تست
+        raw_n, _ = security.mint_invite("t4", ttl_s=3600)
+        old_window = security.PAIRING_RATE_WINDOW_S
+        old_per_ip = security.PAIRING_PENDING_PER_IP
+        security.PAIRING_RATE_WINDOW_S = 1
+        security.PAIRING_PENDING_PER_IP = 10
+        try:
+            for i in range(security.PAIRING_RATE_MAX):
+                security.mint_server_pairing(raw_n, ip="10.8.8.8")
+            rr = security.mint_server_pairing(raw_n, ip="10.8.8.8")
+            ch("نرخ‌سنجی: رمز ششم در پنجره → rate_limited",
+               rr.get("error") == "rate_limited" and rr.get("status") == 429)
+        finally:
+            security.PAIRING_RATE_WINDOW_S = old_window
+            security.PAIRING_PENDING_PER_IP = old_per_ip
+
+        # جاروی دیکشنری نرخ: با آدرس‌های کهنهٔ بسیار، حافظه نگردد
         security._PAIRING_RATE.clear()
         for i in range(600):
             security._PAIRING_RATE[f"10.5.5.{i}"] = [0.0]   # همه کهنه
-        rr = security.mint_pairing_claim("39418", ip="10.9.9.8")
-        ch("جاروی نرخ: کهنه‌ها حذف و ادعای تازه پذیرفته شد",
+        raw_m, _ = security.mint_invite("t5", ttl_s=3600)
+        rr = security.mint_server_pairing(raw_m, ip="10.9.9.8")
+        ch("جاروی نرخ: کهنه‌ها حذف و رمز تازه صادر شد",
            rr.get("ok") and len(security._PAIRING_RATE) < 100)
         ch("جاروی نرخ: آدرس درخواست‌کننده در دیکشنری مانده",
            "10.9.9.8" in security._PAIRING_RATE)
+
+        # آمار دعوت‌های زنده (گزارش مالک)
+        stats = security.live_invite_stats()
+        ch("آمار دعوت زنده: live>=1 و بدون مقدار", stats.get("live", 0) >= 1)
     finally:
         os.environ["ACCESS_AGENT_HOME"] = real_home
 

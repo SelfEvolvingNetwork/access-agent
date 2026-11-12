@@ -153,12 +153,14 @@ def main() -> int:
     # ---------- سمت عامل: نخستین تراکنش فقط‌خواندنی ----------
     c, b = req("GET", "/api/agent/onboarding")
     ch("onboarding بدون توکن 200", c == 200 and b.get("ok") is True)
-    ch("onboarding: پروتکل 0.7.1", b.get("protocol") == "onboarding/0.7.1")
+    ch("onboarding: پروتکل 0.8", b.get("protocol") == "onboarding/0.8")
+    ch("onboarding: بدون iid → invite_required",
+       b.get("invite_required") is True and "pairing" not in b)
     ch("onboarding: هیچ توکنی در پاسخ نیست",
        "aa_" not in json.dumps(b) and "adm_" not in json.dumps(b))
     ch("onboarding: چرخهٔ شش‌مرحله‌ای جفت‌سازی دارد",
        set(b.get("session_flow", {}).keys()) ==
-       {"1_read_this", "2_claim", "3_ask_human", "4_poll",
+       {"1_read_this", "2_get_code", "3_relay_by_user", "4_poll",
         "5_first_calls", "6_end_of_conversation"})
     ch("onboarding: مسیر جایگزین کد مالک دارد", "fallback_owner_code" in b)
     ch("onboarding: خط قرمز تخریب صریح است",
@@ -210,8 +212,8 @@ def main() -> int:
 
     # ---------- سند onboarding مستقیم (بدون شبکه) ----------
     doc = onboarding_doc()
-    ch("onboarding_doc: مدل اعتماد شش‌بخشی دارد",
-       set(doc["trust_model"]) == {"tls", "pairing", "scope", "audit",
+    ch("onboarding_doc: مدل اعتماد هفت‌بخشی دارد (v0.8: +invite)",
+       set(doc["trust_model"]) == {"tls", "pairing", "invite", "scope", "audit",
                                    "persistent_channel", "your_caution_is_welcome"})
     ch("onboarding_doc: ترتیب خواندن سه‌مرجعی", len(doc["reading_order"]) == 4)
 
