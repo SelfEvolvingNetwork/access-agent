@@ -227,9 +227,25 @@ def revoke_sessions() -> int:
 #     POST /api/agent/session/end پاک کند — هیچ اعتباری روی سرور نمی‌ماند.
 # هیچ رویدادی مقدار کد یا توکن را لاگ نمی‌کند — فقط هش و بولی.
 
+# ---------- نشست‌های موقت عامل + اتصال مستقیم با دعوت (v0.7/v0.9) ----------
+# قرارداد v0.9 (فرمان مالک ۲۰۲۶-۱۱-۱۳ — حذف تشریفات): توکن عامل بلندمدت از
+# چت عبور نمی‌کند و اتصال بی‌رمز است:
+#  ۱) مالک/ادمین «دعوت‌نامهٔ یک‌خطی» می‌سازد (CLI/اپ/پنل): فقط URL آشناسازی
+#     با شناسهٔ دعوت (iid): «لطفا این لینک را دنبال کنید: <URL>»
+#  ۲) عامل همان URL را GET می‌کند؛ خودِ iid اعتبار اتصال است — نه رمز
+#     تأییدی، نه poll. سرور دعوت را با نخستین توکن مصرف می‌کند (یک دعوت =
+#     یک عامل) و توکن موقتِ همین مکالمه را در همان پاسخ می‌دهد.
+#  ۳) در آخرین پیام مکالمه، مالک از عامل می‌خواهد نشستش را با
+#     POST /api/agent/session/end پاک کند — هیچ اعتباری روی سرور نمی‌ماند.
+# هیچ رویدادی مقدار iid یا توکن را لاگ نمی‌کند — فقط هش و بولی.
+
+AGENT_SESSION_TTL_S = 8 * 3600
 AGENT_SESSION_TTL_S = 8 * 3600
 AGENT_SESSIONS_MAX = 5
-ONBOARD_CODE_TTL_S_DEFAULT = 3600
+
+# نرخ‌سنجی خطای iid (ضد چکش/بروت‌فورس؛ فقط تلاش‌های ناموفق شمرده می‌شوند)
+ONBOARD_FAIL_WINDOW_S = 300
+ONBOARD_FAIL_MAX = 10
 
 
 def load_agent_sessions() -> dict:
@@ -255,12 +271,12 @@ def save_agent_sessions(data: dict) -> None:
 
 
 def mint_agent_session(ttl_s: int = AGENT_SESSION_TTL_S, ip: str = "",
-                        origin: str = "onboard",
+                        origin: str = "invite",
                         invited_by: str = "") -> tuple[str, dict]:
     """توکن موقت نشست عامل — raw فقط یک بار در پاسخ همین درخواست برمی‌گردد.
 
-    origin (v0.7.2): خاستگاه نشست برای forensics — "pairing" (تأیید انسانی)،
-    "onboard" (کد یک‌بارمصرف legacy). فقط برچسب است؛ هیچ تفاوتی در قلمرو
+    origin: خاستگاه نشست برای forensics — v0.9: "invite" (دعوت با iid؛
+    v0.7.2 پیش‌تر pairing/onboard بود). فقط برچسب است؛ هیچ تفاوتی در قلمرو
     ندارد — سرور از روی مسیر صدور می‌داند این عامل از طرف چه کسی آمده است.
     invited_by (v0.8): برچسب کاربری که دعوت‌نامه‌اش به این نشست انجامیده —
     فقط forensics/گزارش مالک؛ راز نیست.
@@ -296,20 +312,12 @@ def check_agent_session(presented: str) -> bool:
 
 
 def revoke_agent_session(presented: str) -> bool:
-    """خروج خودِ عامل از نشست خودش (پایان مکالمه). True اگر نشستی پاک شد."""
+    """خروج خودِ عامل از نشست خودش (پایان مکالمه). True اگر نشستی پاک شد.
+
+    مقدار خام توکن هرگز ورودی مقایسه نیست — فقط هش."""
     if not presented:
         return False
-    return revoke_agent_session_by_sha(sha256_hex(presented))
-
-
-def revoke_agent_session_by_sha(sha: str) -> bool:
-    """ابطال نشست عامل با هش (فقط داخلی) — v0.8.1: چرخش توکنِ ادعای جفت‌سازی.
-
-    برداشتِ تکرارپذیرِ v0.8.1 پیش از ساخت توکن تازه، نشستِ پیشینِ همان ادعا
-    را با هشش باطل می‌کند تا در هر لحظه حداکثر یک توکن زنده به هر ادعا
-    وصل باشد. مقدار خام توکن هرگز ورودی این تابع نیست — فقط هش."""
-    if not sha:
-        return False
+    sha = sha256_hex(presented)
     data = load_agent_sessions()
     live = _prune_sessions(data.get("sessions", []))
     kept = [s for s in live
@@ -321,96 +329,26 @@ def revoke_agent_session_by_sha(sha: str) -> bool:
     return True
 
 
-def mint_onboard_code(ttl_s: int = ONBOARD_CODE_TTL_S_DEFAULT) -> tuple[str, dict]:
-    """کد یک‌بارمصرف آشناسازی — فقط هشش ذخیره می‌شود؛ raw را مالک به عامل می‌دهد."""
-    import secrets as pysecrets
-    raw = "ob_" + pysecrets.token_hex(16)
-    now = time.time()
-    ttl_s = max(60, min(int(ttl_s), 24 * 3600))
-    rec = {"code_sha": sha256_hex(raw), "used": False,
-           "created": now_iso(),
-           "expires": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(now + ttl_s))}
-    p = home() / "onboard.json"
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(rec, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    tmp.replace(p)
-    try:
-        p.chmod(0o600)
-    except Exception:
-        pass
-    return raw, rec
+# ---------- v0.9 — اتصال مستقیم با دعوت‌نامه (فرمان مالک ۲۰۲۶-۱۱-۱۳) ----------
+# خودِ دعوت (iid) اعتبار اتصال است: GET /api/agent/onboarding?iid=... مستقیماً
+# توکن موقت صادر می‌کند؛ نه رمز تأییدی هست، نه poll. مسیرهای v0.7/v0.8
+# (claim/onboard/agent-approve) و state آن‌ها (pairing.json/onboard.json)
+# حذف شدند. روی دیسک فقط هش می‌ماند؛ audit هرگز مقدار iid یا توکن نمی‌نویسد.
 
-
-def consume_onboard_code(presented: str) -> bool:
-    """کد را یک‌بارمصرف مصرف می‌کند؛ کد نامعتبر/منقضی/مصرف‌شده → False."""
-    if not presented:
-        return False
-    p = home() / "onboard.json"
-    try:
-        rec = json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        return False
-    if not isinstance(rec, dict) or rec.get("used"):
-        return False
-    if _parse_iso(rec.get("expires", "")) <= time.time():
-        return False
-    if not hmac.compare_digest(sha256_hex(presented), str(rec.get("code_sha", ""))):
-        return False
-    rec["used"] = True
-    rec["used_at"] = now_iso()
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(rec, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    tmp.replace(p)
-    try:
-        p.chmod(0o600)
-    except Exception:
-        pass
-    return True
-
-
-# ---------- جفت‌سازی عامل با رمز «سرورساخته» + تأیید انسانی (v0.8) ----------
-# فرمان مالک 2026-11-12 (بازنگری v0.7.1): رمز پنج‌رقمی را دیگر خودِ عامل
-# نمی‌سازد — عامل‌های زبانی برای «تصادفی‌سازی امن» باید محاسبه اجرا می‌کردند
-# و اغلب رمزهای قابل‌حدس انتخاب می‌کردند (فهرست رمز ضعیف تنها علامت عارضه
-# بود). روش تازه:
-#  ۱) مالک «دعوت‌نامهٔ کاربر-مند» می‌سازد: URL آشناسازی + شناسهٔ دعوت
-#     (iid) که به نام یک کاربر صادر شده و فقط هشش روی دیسک می‌ماند.
-#  ۲) عامل همان URL را GET می‌کند؛ سرور خودش رمز ۵ رقمی یک‌بارمصرف
-#     (توزیع یکنواخت secrets) می‌سازد و در همان پاسخ به عامل می‌دهد —
-#     کار عامل فقط «چاپ همان رمز برای کاربر» است؛ هیچ محاسبه‌ای ندارد.
-#  ۳) کاربر رمز را از مسیر امن اپلیکیشن موبایل برای مالک می‌فرستد؛ مالک
-#     (یا اپ) با /api/admin/agent-approve تأیید می‌کند — پاسخ تأیید نشان
-#     می‌دهد رمز پای کدام کاربر/دعوت بوده است.
-#  ۴) عامل با claim_id + claim_secret توکن موقت نشست را از
-#     /api/agent/claim/poll برمی‌دارد (مانند قبل).
-# هیچ رازی از چت عبور نمی‌کند؛ حلقهٔ اعتماد = چشم مالک + نشست ادمین اپ.
-# روی دیسک فقط هش (رمز، راز ادعا و شناسهٔ دعوت) می‌ماند؛ audit هرگز مقدار
-# رمز یا iid را نمی‌نویسد. مسیر «عامل‌ساخته» (POST /api/agent/claim با کد
-# خودساخته) بازنشسته شده و 410 می‌گیرد.
-
-PAIRING_APPROVE_WINDOW_S = 900     # مهلت تأیید — v0.8: رمز حالا از مسیر اپ
-                                  # (غیرهم‌زمان) به مالک می‌رسد؛ ۲ دقیقه کوتاه بود
-PAIRING_PICKUP_WINDOW_S = 1800     # مهلت برداشت توکن پس از تأیید
-PAIRING_PENDING_MAX = 16           # سقف جهانی ادعاهای در انتظار
-PAIRING_PENDING_PER_IP = 2         # سقف ادعای هم‌زمان هر IP
-PAIRING_RATE_WINDOW_S = 300        # پنجرهٔ نرخ‌سنجی هر IP
-PAIRING_RATE_MAX = 5               # حداکثر ادعا در پنجره
-
-# ---------- دعوت‌نامهٔ کاربر-مند (v0.8) ----------
+# ---------- دعوت‌نامهٔ کاربر-مند (v0.8/v0.9) ----------
 # invites.json (chmod 600): {"invites": [{"iid_sha", "invited_by", "created",
-# "created_ts", "expires", "expires_ts", "used"]} — شناسهٔ دعوت مثل کد
-# آشناسازی legacy یک «توانایی» است: ۹۶ بیت تصادفی، فقط هش روی دیسک، raw
-# فقط یک بار در بلوک دعوت چاپ می‌شود. دعوت با نخستین «تأیید» مصرف می‌شود
-# (یک دعوت = یک عامل)؛ تا پیش از آن، GET تازه رمز تازه می‌دهد (انقضای رمز
-# قبلی). برچسب invited_by راز نیست — پاسخ آشناسازی و پاسخ تأیید مالک، هر
-# دو آن را نشان می‌دهند تا مالک بداند رمز پای کدام کاربر بوده است.
+# "created_ts", "expires", "expires_ts", "used"}] — شناسهٔ دعوت یک «توانایی»
+# است: ۹۶ بیت تصادفی، فقط هش روی دیسک، raw فقط یک بار در دعوت چاپ می‌شود.
+# دعوت با نخستین توکنِ صادرشده مصرف می‌شود (یک دعوت = یک عامل)؛ تا پیش از آن
+# زنده است و انقضا دارد. برچسب invited_by راز نیست — پاسخ آشناسازی و رکورد
+# نشست نشانش می‌دهند تا «پای کدام کاربر» بودن دعوت روشن باشد.
 
 INVITE_TTL_S_DEFAULT = 24 * 3600
 INVITE_TTL_S_MAX = 7 * 24 * 3600
 INVITES_MAX = 32
 
-_PAIRING_LOCK = threading.Lock()
-_PAIRING_RATE: dict[str, list[float]] = {}
+_INVITE_LOCK = threading.Lock()
+_ONBOARD_FAIL_RATE: dict[str, list[float]] = {}
 
 
 def _invites_path() -> Path:
@@ -475,7 +413,7 @@ def mint_invite(invited_by: str = "", ttl_s: int = INVITE_TTL_S_DEFAULT) -> tupl
         "expires_ts": now + ttl_s,
         "used": False,
     }
-    with _PAIRING_LOCK:
+    with _INVITE_LOCK:
         invites = _sweep_invites(_load_invites(), now)
         if len(invites) >= INVITES_MAX:
             raise RuntimeError("too many live invites — wait for expiry or approve/pair first")
@@ -515,200 +453,42 @@ def live_invite_stats() -> dict:
             "labeled": sum(1 for i in invites if i.get("invited_by"))}
 
 
-def _pairing_claims_path() -> Path:
-    return home() / "pairing.json"
+def claim_invite_session(raw_iid: str, ip: str = "") -> dict:
+    """v0.9 — خودِ دعوت اعتبار اتصال است؛ GET با iid مستقیماً توکن می‌دهد.
 
-
-def _load_claims() -> list[dict]:
-    try:
-        data = json.loads(_pairing_claims_path().read_text(encoding="utf-8"))
-        if isinstance(data, dict) and isinstance(data.get("claims"), list):
-            return [c for c in data["claims"] if isinstance(c, dict)]
-    except Exception:
-        pass
-    return []
-
-
-def _save_claims(claims: list[dict]) -> None:
-    p = _pairing_claims_path()
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps({"claims": claims}, indent=2, ensure_ascii=False) + "\n",
-                   encoding="utf-8")
-    tmp.replace(p)
-    try:
-        p.chmod(0o600)
-    except Exception:
-        pass
-
-
-def _sweep_claims(claims: list[dict], now: float | None = None) -> list[dict]:
-    """ادعاهای مرده را می‌ریزد: مصرف‌شده‌ها فوری؛ بقیه تا پایان پنجرهٔ برداشت."""
-    now = time.time() if now is None else now
-    keep: list[dict] = []
-    for c in claims:
-        if c.get("consumed"):
-            continue
-        if c.get("approved"):
-            deadline = c.get("approved_ts", 0.0) + PAIRING_PICKUP_WINDOW_S
-        else:
-            deadline = (c.get("created_ts", 0.0)
-                        + (c.get("approve_window_s") or PAIRING_APPROVE_WINDOW_S)
-                        + PAIRING_PICKUP_WINDOW_S)
-        if now <= deadline:
-            keep.append(c)
-    return keep
-
-
-def _claim_pending(c: dict, now: float) -> bool:
-    return (not c.get("approved") and not c.get("consumed")
-            and c.get("created_ts", 0.0)
-            + (c.get("approve_window_s") or PAIRING_APPROVE_WINDOW_S) > now)
-
-
-def mint_server_pairing(raw_iid: str, ip: str = "",
-                        approve_window_s: int = PAIRING_APPROVE_WINDOW_S) -> dict:
-    """قلب v0.8 — رمز ۵ رقمی را «سرور» می‌سازد و به عامل می‌دهد تا فقط چاپش کند.
-
-    ورودی توانایی است، نه راز چت: شناسهٔ دعوت (iid) که مالک در بلوک دعوت
-    داده است. خروجی: رمز raw (فقط در همین پاسخ)، claim_id و claim_secret.
-    فقط هش‌ها روی دیسک می‌مانند. سقف‌ها همان v0.7.1 است."""
-    import secrets as pysecrets
+    دعوت با نخستین توکن مصرف می‌شود (یک دعوت = یک عامل). فقط هش‌ها روی دیسک
+    می‌مانند و مقدار iid هرگز ذخیره یا لاگ نمی‌شود. تلاش‌های ناموفق هر IP
+    نرخ‌سنجی می‌شوند (ضد بروت‌فورس بی‌معنا روی ۹۶ بیت)."""
     now = time.time()
-    global _PAIRING_RATE
-    with _PAIRING_LOCK:
+    global _ONBOARD_FAIL_RATE
+    with _INVITE_LOCK:
         invite = _find_live_invite(raw_iid, now)
         if invite is None:
+            # جاروی دیکشنری نرخ — با آدرس‌های یکتای بسیار، حافظه بی‌کران نگردد
+            if len(_ONBOARD_FAIL_RATE) > 512:
+                cutoff = now - ONBOARD_FAIL_WINDOW_S
+                _ONBOARD_FAIL_RATE = {k: [t for t in v if t > cutoff]
+                                      for k, v in _ONBOARD_FAIL_RATE.items()}
+                _ONBOARD_FAIL_RATE = {k: v for k, v in
+                                      _ONBOARD_FAIL_RATE.items() if v}
+            window = [t for t in _ONBOARD_FAIL_RATE.get(ip, [])
+                      if t > now - ONBOARD_FAIL_WINDOW_S]
+            if len(window) >= ONBOARD_FAIL_MAX:
+                return {"ok": False, "status": 429, "error": "rate_limited",
+                        "detail": "too many failed invites from this address "
+                                  "— wait a few minutes"}
+            window.append(now)
+            _ONBOARD_FAIL_RATE[ip] = window
             return {"ok": False, "status": 404, "error": "unknown_invite",
-                    "detail": "invite unknown, expired or already used — ask the "
-                              "owner for a fresh invite"}
-        # جاروی دیکشنری نرخ — با آدرس‌های یکتای بسیار، حافظه بی‌کران نگردد
-        if len(_PAIRING_RATE) > 512:
-            cutoff = now - PAIRING_RATE_WINDOW_S
-            _PAIRING_RATE = {k: [t for t in v if t > cutoff]
-                             for k, v in _PAIRING_RATE.items()}
-            _PAIRING_RATE = {k: v for k, v in _PAIRING_RATE.items() if v}
-        window = [t for t in _PAIRING_RATE.get(ip, [])
-                  if t > now - PAIRING_RATE_WINDOW_S]
-        if len(window) >= PAIRING_RATE_MAX:
-            return {"ok": False, "status": 429, "error": "rate_limited",
-                    "detail": "too many pairing codes from this address — wait a few minutes"}
-        claims = _sweep_claims(_load_claims(), now)
-        pending = [c for c in claims if _claim_pending(c, now)]
-        if len(pending) >= PAIRING_PENDING_MAX:
-            return {"ok": False, "status": 429, "error": "busy",
-                    "detail": "too many pending claims — try again later"}
-        if sum(1 for c in pending if c.get("ip") == ip) >= PAIRING_PENDING_PER_IP:
-            return {"ok": False, "status": 429, "error": "busy",
-                    "detail": "too many pending claims from this address"}
-        # رمز سرورساخته — توزیع یکنواخت روی ۱۰۰٬۰۰۰ حالت؛ نه محاسبهٔ عامل،
-        # نه سوگیری زبانی، نه فهرست رمز ضعیف. صفرهای ابتدایی حفظ می‌شوند.
-        code = f"{pysecrets.randbelow(100000):05d}"
-        cid = "acl_" + pysecrets.token_hex(12)
-        secret = "aclsk_" + pysecrets.token_hex(24)
-        claims.append({
-            "id": cid,
-            "secret_sha": sha256_hex(secret),
-            "code_sha": sha256_hex(code),
-            "iid_sha": str(invite.get("iid_sha", "")),
-            "invited_by": str(invite.get("invited_by", "")),
-            "ip": ip,
-            "created": now_iso(),
-            "created_ts": now,
-            "approve_window_s": int(approve_window_s),
-            "approved": False,
-            "approved_ts": 0.0,
-            "consumed": False,
-        })
-        _save_claims(claims)
-        window.append(now)
-        _PAIRING_RATE[ip] = window
-    return {"ok": True, "code": code, "claim_id": cid, "claim_secret": secret,
-            "invited_by": str(invite.get("invited_by", "")),
-            "approve_window_s": int(approve_window_s),
-            "pickup_window_s": PAIRING_PICKUP_WINDOW_S}
-
-
-def approve_pairing_code(code: str, actor: str = "admin", ip: str = "") -> dict:
-    """تأیید انسانی رمز — فقط قدیمی‌ترین ادعای زندهٔ منطبق تأیید می‌شود.
-
-    تطبیق روی هش و مقایسهٔ زمان-ثابت است؛ مقدار رمز هرگز ذخیره یا لاگ
-    نمی‌شود. v0.8: اگر ادعا پای یک دعوت (iid) باشد، همان دعوت مصرف
-    می‌شود (یک دعوت = یک عامل) و برچسب «دعوت از طرف کاربر …» در پاسخ
-    برمی‌گردد تا مالک بداند رمز را از کدام کاربر دریافت کرده است."""
-    code = str(code or "").strip()
-    if len(code) != 5 or not (code.isascii() and code.isdigit()):
-        return {"ok": False, "status": 400, "error": "bad_code",
-                "detail": "code must be exactly 5 ASCII digits"}
-    target = sha256_hex(code)
-    now = time.time()
-    with _PAIRING_LOCK:
-        claims = _sweep_claims(_load_claims(), now)
-        cands = [c for c in claims
-                 if _claim_pending(c, now)
-                 and hmac.compare_digest(str(c.get("code_sha", "")), target)]
-        if not cands:
-            _save_claims(claims)
-            return {"ok": False, "status": 404, "error": "no_pending_claim",
-                    "detail": "no pending claim matches this code (wrong, expired "
-                              "or already approved)"}
-        oldest = min(cands, key=lambda c: c.get("created_ts", 0.0))
-        oldest["approved"] = True
-        oldest["approved_ts"] = now
-        oldest["approved_at"] = now_iso()
-        _save_claims(claims)
-        iid_sha = str(oldest.get("iid_sha", ""))
-        if iid_sha:
-            _use_invite(iid_sha)  # یک دعوت = یک عامل؛ مصرف با تأیید
-    return {"ok": True, "claim_id": oldest.get("id", ""),
-            "invited_by": str(oldest.get("invited_by", "")),
-            "pickup_window_s": PAIRING_PICKUP_WINDOW_S}
-
-
-def collect_pairing_token(claim_id: str, claim_secret: str) -> dict:
-    """برداشت توکن موقت نشست عامل — با راز ادعا؛ در پنجرهٔ برداشت تکرارپذیر.
-
-    وضعیت‌ها: pending / approved (+token و agent_token) / expired (پنجرهٔ
-    تأیید گذشته) / unknown (ناشناخته یا پنجرهٔ برداشت گذشته).
-
-    v0.8.1 (درس میدان ۲۰۲۶-۱۱-۱۲): برداشت دیگر «یک‌بارمصرفِ خاموش» نیست —
-    عاملِ چتی که توکن را در سمت خود از دست داد (خرابی ذخیرهٔ محلی، قطع
-    نوبت) بدون دعوت‌نامهٔ تازه از همان claim بازیابی می‌کند. هر poll موفقِ
-    approved، نشستِ پیشینِ همان ادعا را باطل (issued_sha) و توکن تازه
-    می‌دهد؛ در هر لحظه حداکثر یک توکن زنده به این ادعا وصل است. روی دیسک
-    همچنان فقط هش می‌ماند."""
-    now = time.time()
-    with _PAIRING_LOCK:
-        claims = _sweep_claims(_load_claims(), now)
-        rec = next((c for c in claims if c.get("id") == claim_id), None)
-        if rec is None:
-            _save_claims(claims)
-            return {"ok": True, "status": "unknown"}
-        if not hmac.compare_digest(sha256_hex(claim_secret or ""),
-                                   str(rec.get("secret_sha", ""))):
-            _save_claims(claims)
-            return {"ok": True, "status": "unknown"}
-        if rec.get("approved"):
-            # توکنِ همین ادعا: اگر قبلاً صادر شده بود، پیش از ساخت توکن
-            # تازه با هشش باطل می‌شود — در هر لحظه حداکثر یک توکن زنده
-            # به هر ادعا. پنجرهٔ برداشت گذشته را جاروبِ بالا گرفته و
-            # «unknown» برگردانده است — رمز تازه لازم است.
-            if rec.get("issued_sha"):
-                revoke_agent_session_by_sha(str(rec.get("issued_sha")))
-            raw, sess = mint_agent_session(origin="pairing",
-                                           invited_by=str(rec.get("invited_by", "")))
-            rec["issued_sha"] = sha256_hex(raw)
-            _save_claims(claims)
-            return {"ok": True, "status": "approved", "token": raw,
-                    "agent_token": raw,
-                    "expires": sess.get("expires", "")}
-        if now > rec.get("created_ts", 0.0) \
-                + (rec.get("approve_window_s") or PAIRING_APPROVE_WINDOW_S):
-            _save_claims(claims)
-            return {"ok": True, "status": "expired"}
-        _save_claims(claims)
-        remaining = int(rec.get("created_ts", 0.0)
-                        + (rec.get("approve_window_s") or PAIRING_APPROVE_WINDOW_S) - now) + 1
-        return {"ok": True, "status": "pending", "retry_after_s": max(0, remaining)}
+                    "detail": "invite unknown, expired or already used — ask "
+                              "the owner for a fresh invite"}
+        # یک دعوت = یک عامل؛ مصرف با نخستین توکن
+        _use_invite(str(invite.get("iid_sha", "")))
+        raw, sess = mint_agent_session(ip=ip, origin="invite",
+                                       invited_by=str(invite.get("invited_by", "")))
+    return {"ok": True, "token": raw, "agent_token": raw,
+            "expires": sess.get("expires", ""),
+            "invited_by": str(invite.get("invited_by", ""))}
 
 
 def clear_agent_sessions() -> int:

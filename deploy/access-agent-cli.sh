@@ -18,14 +18,11 @@
 #    show-github-app         app config summary (no secrets)
 #    clear-github-app        remove app config; broker falls back to PAT mode
 #    handoff                 ready-to-paste handoff block (legacy, <=0.6.x agents)
-#    invite [for-user] [ttl_h]  user-bound invite block (v0.8). The URL carries
-#                            a one-time invite id issued in the named user's
-#                            honor; the agent just GETs it — the SERVER makes
-#                            the 5-digit code and the agent only prints it.
-#                            "legacy [ttl_min]": old one-time-code block
-#    approve <code>           confirm your AI agent's 5-digit pairing code
-#                            (same as the mobile app's approve section; the
-#                            response names the invite's user)
+#    invite [for-user] [ttl_h]  one-line user-bound invite (v0.9): the URL
+#                            carries a one-time invite id; the agent GETs it
+#                            and the server directly issues the temporary
+#                            session token — no code, no approval, no polling
+#                            (owner decree 2026-11-13)
 #    revoke-agent-sessions    kill ALL temporary agent pairing sessions
 #    audit [N]               tail of the audit log (default 30)
 #    autoupdate on|off       arm/disarm the server-side self-update timer (v0.8.3)
@@ -175,34 +172,17 @@ print(build_block())
 PY
     ;;
   invite)
-    # v0.8 — دعوت‌نامهٔ کاربر-مند: invite [for-user] [ttl_h]؛ legacy: بلوک کد قدیمی
+    # v0.9 — دعوت‌نامهٔ یک‌خطی: invite [for-user] [ttl_h]
     OPT_DIR="${ACCESS_AGENT_OPT:-/opt/access-agent}"
     if [ ! -f "$OPT_DIR/access_agent/handoff.py" ]; then
       die "handoff module missing — upgrade first: re-run bootstrap.sh"
     fi
-    MODE="${2:-}"
-    if [ "$MODE" = "legacy" ]; then
-      TTL="${3:-60}"
-      ACCESS_AGENT_HOME="$ETC" python3 - "$OPT_DIR" "$TTL" <<'PY'
+    LABEL="${2:-}"
+    TTL_H="${3:-24}"
+    ACCESS_AGENT_HOME="$ETC" python3 - "$OPT_DIR" "$LABEL" "$TTL_H" <<'PY'
 import sys
 sys.path.insert(0, sys.argv[1])
-from access_agent.handoff import build_invite_block, invite_missing_inputs
-from access_agent.security import mint_onboard_code
-miss = invite_missing_inputs()
-if miss:
-    raise SystemExit(f"invite data missing: {', '.join(miss)}")
-code, rec = mint_onboard_code(ttl_s=int(sys.argv[2]) * 60)
-print(build_invite_block(code, ttl_min=int(sys.argv[2])))
-PY
-    else
-      # بدون آرگومان یا با «pairing»: دعوت کاربر-مند (برچسب اختیاری + TTL ساعت)
-      LABEL="${2:-}"
-      TTL_H="${3:-24}"
-      if [ "$LABEL" = "pairing" ]; then LABEL=""; fi
-      ACCESS_AGENT_HOME="$ETC" python3 - "$OPT_DIR" "$LABEL" "$TTL_H" <<'PY'
-import sys
-sys.path.insert(0, sys.argv[1])
-from access_agent.handoff import build_pairing_invite, invite_missing_inputs
+from access_agent.handoff import build_invite, invite_missing_inputs
 from access_agent.security import mint_invite, sanitize_invite_label
 miss = invite_missing_inputs()
 if miss:
@@ -210,33 +190,10 @@ if miss:
 label = sanitize_invite_label(sys.argv[2])
 ttl_h = max(1, min(int(sys.argv[3]), 168))
 iid, rec = mint_invite(label, ttl_s=ttl_h * 3600)
-print(build_pairing_invite(iid, label, ttl_h))
+print(build_invite(iid))
 PY
-    fi
     ;;
-  approve)
-    # v0.7.1/v0.8 — تأیید رمز جفت‌سازی (سرورساخته) از راه SSH؛ هم‌ارز بخش
-    # «تأیید عامل» اپ. پاسخ نشان می‌دهد رمز پای کدام کاربر/دعوت بوده است.
-    CODE="${2:-}"
-    case "$CODE" in
-      [0-9][0-9][0-9][0-9][0-9]) ;;
-      *) die "usage: access-agent approve <5-digit code your AI agent printed>" ;;
-    esac
-    OPT_DIR="${ACCESS_AGENT_OPT:-/opt/access-agent}"
-    ACCESS_AGENT_HOME="$ETC" python3 - "$OPT_DIR" "$CODE" <<'PY'
-import sys
-sys.path.insert(0, sys.argv[1])
-from access_agent.security import approve_pairing_code
-res = approve_pairing_code(sys.argv[2], actor="owner-cli")
-if not res.get("ok"):
-    raise SystemExit(f"not matched: {res.get('detail') or res.get('error')}")
-who = res.get("invited_by") or "the owner themself"
-print(f"approved (invite of user: {who}) — the agent has "
-      f"{res.get('pickup_window_s', 1800) // 60} minutes "
-      "to collect its session token")
-PY
-    ok "agent pairing code approved"
-    ;;
+
   revoke-agent-sessions)
     # v0.7.1 — ابطال همهٔ نشست‌های موقت جفت‌سازی (کلید اضطراری مالک)
     OPT_DIR="${ACCESS_AGENT_OPT:-/opt/access-agent}"

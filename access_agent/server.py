@@ -3,30 +3,16 @@
 Endpoints (v0.5):
   GET  /                          public service info
   GET  /healthz                   public lightweight health
-  GET  /api/agent/onboarding      public read-only onboarding doc (v0.8):
-                                  the full instructions come from the server,
-                                  not from the chat's first message. With
-                                  ?iid=<invite-id> (v0.8) the SERVER mints the
-                                  one-time 5-digit code and hands it to the
-                                  agent to just print — the agent computes
-                                  nothing; the user relays the code to the
-                                  owner via Parastoo Mobile's secure path
-  POST /api/agent/onboard         public code-for-token exchange (v0.7):
-                                  one-time invite code -> temporary agent
-                                  session token (aagx_, 8h, max 5 live)
-  POST /api/agent/claim           RETIRED (v0.8) -> 410: agent-made codes are
-                                  gone; the server issues the code via the
-                                  onboarding GET above
-  POST /api/agent/claim/poll      public token pickup (v0.7.1): claim_id +
-                                  claim_secret -> pending|approved|expired
-  POST /api/admin/agent-approve   admin human-in-the-loop confirmation of the
-                                  pairing code (mobile app / SSH CLI); the
-                                  response names the invite's user (invited_by)
-                                  so the owner knows who invited the agent
-  GET  /api/admin/invite          admin invite block (v0.8): mints a
+  GET  /api/agent/onboarding      public read-only onboarding doc; with
+                                  ?iid=<invite-id> (v0.9) the invite itself
+                                  is the credential: the server DIRECTLY
+                                  issues the temporary agent session token
+                                  (aagx_) in the same response — no pairing
+                                  code, no polling (owner decree 2026-11-13)
+  GET  /api/admin/invite          admin one-line invite (v0.9): mints a
                                   user-bound one-time invite (?for=<label>,
                                   ?ttl_h=1..168 default 24) whose URL carries
-                                  the invite id — leak-safe (URL + cert hash)
+                                  the invite id — leak-safe
   POST /api/admin/revoke-agent-sessions  admin kill-all temporary sessions
   POST /api/agent/session/end     agent|admin  end-of-conversation: revoke
                                   the caller's temporary session (v0.7)
@@ -102,14 +88,14 @@ from . import VERSION
 from . import appcore, bridgeuninstall, githubapp, parastoolifecycle
 from .execbridge import run_exec
 from .githubbroker import disclose, grants_tail, save_token, stored_token
-from .handoff import build_block, build_pairing_invite, cert_fingerprint, onboarding_doc
-from .security import (approve_pairing_code, audit, audit_tail,
-                       agent_paused, check_agent_session, check_token,
-                       clear_agent_sessions, collect_pairing_token,
-                       consume_onboard_code, home, load_state, load_tokens,
-                       mint_agent_session, mint_invite, mint_server_pairing,
-                       now_iso, sanitize_invite_label, save_tokens,
-                       revoke_agent_session, set_agent_paused, sha256_hex)
+from .handoff import (ONBOARDING_RULES, build_block, build_invite,
+                      cert_fingerprint, onboarding_doc)
+from .security import (audit, audit_tail, agent_paused, check_agent_session,
+                       check_token, claim_invite_session,
+                       clear_agent_sessions, home, load_state, load_tokens,
+                       mint_invite, now_iso, sanitize_invite_label,
+                       save_tokens, revoke_agent_session, set_agent_paused,
+                       sha256_hex)
 
 MAX_BODY = 100_000
 MAX_BODY_HARD = 1_000_000
@@ -127,13 +113,7 @@ POST_ONLY = {
     "/api/admin/parastoo/reinstall",
     "/api/admin/parastoo/update",
     "/api/admin/bridge/uninstall",
-    # v0.7 — آشناسازی: تبادل کد یک‌بارمصرف و پایان نشست (عمومی/عامل)
-    "/api/agent/onboard",
     "/api/agent/session/end",
-    # v0.7.2 — جفت‌سازی با «رمز سرورساخته» + تأیید انسانی + دعوت کاربر-مند
-    "/api/agent/claim",
-    "/api/agent/claim/poll",
-    "/api/admin/agent-approve",
     "/api/admin/revoke-agent-sessions",
 }
 GET_ONLY = {"/", "/healthz", "/api/agent/onboarding", "/api/status", "/api/admin/audit",
@@ -347,49 +327,36 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "service": "access-agent", "version": VERSION,
                                     "detail": "independent AI-agent bridge; see /healthz and /api/status",
                                     "agent_connected": bool(self._role())})
-        # v0.7/v0.8 — آشناسازی اعتماد: نخستین تراکنش عامل، فقط‌خواندنی و بدون
-        # توکن. بدون iid فقط سند را می‌دهد؛ با ?iid=<شناسهٔ دعوت> (v0.8)
-        # خودِ سرور رمز ۵ رقمی یک‌بارمصرف را می‌سازد و همراه اعتبارنامه‌های
-        # ادعا در همان پاسخ تحویل می‌دهد — عامل هیچ محاسبه‌ای نمی‌کند، فقط
-        # همان رمز را برای کاربر چاپ می‌کند و کاربر آن را از مسیر امن اپ
-        # موبایل برای مالک می‌فرستد. مقدار iid هرگز در audit نمی‌آید.
+        # v0.9 — اتصال مستقیم: خودِ iid اعتبار است؛ نه رمز، نه poll (فرمان
+        # مالک ۲۰۲۶-۱۱-۱۳). بدون iid فقط سند کوتاه؛ با iid توکن در همان پاسخ.
         if path == "/api/agent/onboarding":
             iid = self._query_param("iid", max_len=80)
             if not iid:
                 audit("anon", "agent_onboarding_read", {}, self._peer_ip())
-                doc = onboarding_doc()
-                doc["invite_required"] = True
-                return self._send(200, doc)
-            res = mint_server_pairing(iid, self._peer_ip())
+                return self._send(200, onboarding_doc())
+            res = claim_invite_session(iid, self._peer_ip())
             if not res.get("ok"):
                 audit("anon", "agent_onboarding_refused",
                       {"error": res.get("error")}, self._peer_ip())
                 return self._send(res.get("status", 404), res)
-            doc = onboarding_doc()
-            doc["pairing"] = {
+            audit("anon", "agent_onboarding_granted",
+                  {"invited_by": res.get("invited_by", "")}, self._peer_ip())
+            return self._send(200, {
+                "ok": True,
+                "service": "access-agent",
+                "version": VERSION,
+                "protocol": "onboarding/0.9.0",
                 "invited_by": res.get("invited_by", ""),
-                "code": res.get("code", ""),
-                "print_for_user": (
-                    "این رمز یک‌بارمصرف ۵ رقمی را عیناً و بدون هیچ تغییری برای "
-                    "کاربر چاپ کن — تو هیچ رمزی نمی‌سازی و هیچ محاسبه‌ای "
-                    "نمی‌کنی. همان‌جا که رمز را چاپ کردی، نوبت/پیامت را قطع "
-                    "نکن و منتظر پیام کاربر نمان: کاربر رمز را از مسیر امن "
-                    "اپلیکیشن موبایل برای مالک می‌فرستد و مالک تأییدش می‌کند؛ "
-                    "نتیجه را خودِ سرور با POST /api/agent/claim/poll (هر "
-                    "~۱۰ ثانیه، طبق گام ۴ سند) به تو می‌دهد — کل ورود در همین "
-                    "یک پیام عامل تمام می‌شود."
-                ),
-                "claim_id": res.get("claim_id", ""),
-                "claim_secret": res.get("claim_secret", ""),
-                "approve_window_s": res.get("approve_window_s", 0),
-                "pickup_window_s": res.get("pickup_window_s", 0),
-                "poll": {"method": "POST", "path": "/api/agent/claim/poll",
-                         "body": {"claim_id": "...", "claim_secret": "..."}},
-            }
-            audit("anon", "agent_onboarding_code_issued",
-                  {"claim_id": res.get("claim_id", ""),
-                   "invited_by": res.get("invited_by", "")}, self._peer_ip())
-            return self._send(200, doc)
+                "token": res.get("token", ""),
+                "agent_token": res.get("token", ""),
+                "expires": res.get("expires", ""),
+                "cert_sha256": cert_fingerprint(),
+                "next": ("GET /healthz، سپس GET /api/status با همین توکن "
+                         "(Authorization: Bearer)؛ گزارش به مالک و انتظار فرمان."),
+                "end": {"method": "POST", "path": "/api/agent/session/end",
+                        "note": "در آخرین پیام مکالمه، به درخواست مالک."},
+                "rules": ONBOARDING_RULES,
+            })
         role = self._guard("agent")
         if not role:
             return
@@ -451,7 +418,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 from .security import INVITE_TTL_S_DEFAULT
                 iid, rec = mint_invite(label, ttl_s=ttl_h * 3600)
-                invite = build_pairing_invite(iid, label, ttl_h)
+                invite = build_invite(iid)
             except Exception as e:
                 return self._send(409, {"ok": False, "error": "invite_unavailable",
                                         "detail": str(e)})
@@ -509,27 +476,6 @@ class Handler(BaseHTTPRequestHandler):
         if data is None:
             return self._send(400, {"ok": False, "error": "bad_json"})
 
-        # v0.7 — آشناسازی: کد یک‌بارمصرف دعوت‌نامه ↔ توکن موقت نشست عامل.
-        # عمومی است (عامل هنوز توکن ندارد) اما کد باید زنده، معتبر و
-        # مصرف‌نشده باشد؛ مصرف یک‌باره است و در audit فقط بولی ثبت می‌شود.
-        if path == "/api/agent/onboard":
-            code = str(data.get("onboard_code") or "")
-            if not consume_onboard_code(code):
-                audit("anon", "agent_onboard_refused", {}, self._peer_ip())
-                return self._send(401, {"ok": False, "error": "onboard_refused",
-                                        "detail": "code missing, expired, used or wrong "
-                                                  "— ask the owner for a fresh invite"})
-            raw, rec = mint_agent_session(ip=self._peer_ip(), origin="onboard")
-            audit("anon", "agent_onboard_granted",
-                  {"expires": rec.get("expires", "")}, self._peer_ip())
-            return self._send(200, {"ok": True, "token": raw,
-                                    "agent_token": raw,
-                                    "expires": rec.get("expires", ""),
-                                    "note": "temporary session token for THIS "
-                                            "conversation only; end it via "
-                                            "POST /api/agent/session/end when the "
-                                            "owner asks"})
-
         if path == "/api/agent/session/end":
             role = self._guard("agent")
             if not role:
@@ -540,45 +486,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "session_removed": removed,
                                     "detail": "temporary session revoked; no agent "
                                               "credential of this conversation remains"})
-
-        # v0.7.2 → v0.8 — جفت‌سازی: رمز ۵ رقمی دیگر «عامل‌ساخته» نیست؛ سرور
-        # آن را در پاسخ GET /api/agent/onboarding?iid=... می‌سازد. این مسیر
-        # بازنشسته شده و با پیام راهنما 410 می‌گیرد (فرمان مالک 2026-11-12).
-        if path == "/api/agent/claim":
-            audit("anon", "agent_pairing_claim_retired", {}, self._peer_ip())
-            return self._send(410, {
-                "ok": False, "error": "agent_made_codes_retired",
-                "detail": "v0.8: the SERVER issues the pairing code now — GET "
-                          "/api/agent/onboarding?iid=<invite-id> (the full URL "
-                          "is in your invite) and print the code it gives you; "
-                          "the user relays it to the owner via Parastoo Mobile",
-            })
-
-        # v0.7.1 — برداشت توکن موقت: فقط با راز ادعا و فقط یک بار.
-        if path == "/api/agent/claim/poll":
-            res = collect_pairing_token(str(data.get("claim_id") or ""),
-                                        str(data.get("claim_secret") or ""))
-            if res.get("status") == "approved":
-                audit("anon", "agent_pairing_token_issued",
-                      {"claim_id": str(data.get("claim_id") or "")[:40]}, self._peer_ip())
-            return self._send(200, res)
-
-        # v0.7.1/v0.8 — تأیید انسانی: مالک/اپ موبایل رمز را روی کانال ادمین
-        # تأیید می‌کند (معادل SSH: sudo access-agent approve <code>). پاسخ v0.8
-        # برچسب دعوت (invited_by) را هم می‌دهد تا مالک بداند رمز پای کدام
-        # کاربر/دعوت بوده است.
-        if path == "/api/admin/agent-approve":
-            role = self._guard("admin")
-            if not role:
-                return
-            res = approve_pairing_code(str(data.get("code") or ""), role, self._peer_ip())
-            if not res.get("ok"):
-                audit(role, "admin_agent_approve", {"matched": False}, self._peer_ip())
-                return self._send(res.get("status", 404), res)
-            audit(role, "admin_agent_approve",
-                  {"matched": True, "claim_id": res.get("claim_id", ""),
-                   "invited_by": res.get("invited_by", "")}, self._peer_ip())
-            return self._send(200, res)
 
         # v0.7.1 — کلید اضطراری مالک: ابطال همهٔ نشست‌های موقت جفت‌سازی.
         if path == "/api/admin/revoke-agent-sessions":

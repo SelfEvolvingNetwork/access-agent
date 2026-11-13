@@ -26,6 +26,8 @@
   سرور زنده پس از هر آپدیت پل سایه می‌انداخت و اپ دادهٔ قدیمی می‌گرفت.
 - sha256 پوشش دقیقِ متنِ config_json است — اپ همان بایت دریافتی را هش
   می‌کند؛ خرابی کش یا دستکاری در مسیر، در اپ رد می‌شود.
+- v0.9 — نقشهٔ اندپوینت‌ها بدون agent_approve (تأیید انسانی حذف شد؛ اتصال
+  با دعوت‌نامهٔ یک‌خطی مستقیم است — AGENT_PROTOCOL §۱.۵): revision 5.
 """
 from __future__ import annotations
 
@@ -52,7 +54,7 @@ _PATH_RE = re.compile(r"^/[A-Za-z0-9_\-./?=&]{1,119}$")
 # پیش‌فرض جاسازی‌شده — با assets/core/parastoo-core.json اپ هم‌نگه داشته می‌شود.
 DEFAULT_PAYLOAD: dict = {
     "schema": SCHEMA,
-    "revision": 4,
+    "revision": 5,
     "min_version_code": 17,  # اپ 0.4.12 — اولین نسخه با موتور هستهٔ هات
     "config": {
         "endpoints": {
@@ -65,7 +67,6 @@ DEFAULT_PAYLOAD: dict = {
             "revoke_agent_token": "/api/admin/revoke-agent-token",
             "pause_realm": "/api/admin/agent-realm/pause",
             "handoff": "/api/admin/handoff",
-            "agent_approve": "/api/admin/agent-approve",
             "revoke_agent_sessions": "/api/admin/revoke-agent-sessions",
             "agent_invite": "/api/admin/invite",
             "parastoo_lifecycle_status": "/api/admin/parastoo/lifecycle-status",
