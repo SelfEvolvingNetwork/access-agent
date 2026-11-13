@@ -327,8 +327,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "service": "access-agent", "version": VERSION,
                                     "detail": "independent AI-agent bridge; see /healthz and /api/status",
                                     "agent_connected": bool(self._role())})
-        # v0.9 — اتصال مستقیم: خودِ iid اعتبار است؛ نه رمز، نه poll (فرمان
+        # v0.9.1 — اتصال مستقیم: خودِ iid اعتبار است؛ نه رمز، نه poll (فرمان
         # مالک ۲۰۲۶-۱۱-۱۳). بدون iid فقط سند کوتاه؛ با iid توکن در همان پاسخ.
+        # فرمان مالک (چت دوم ۲۰۲۶-۱۱-۱۳): توضیحِ بیشتر ولی مختصر، پس از فراخوانی —
+        # پاسخ با «connected: true» و یک خط هدف شروع می‌شود تا عامل بداند چه
+        # رخ داده و بعد چه کند (اعتمادسازی از خود سرور، نه از متن دعوت).
         if path == "/api/agent/onboarding":
             iid = self._query_param("iid", max_len=80)
             if not iid:
@@ -343,16 +346,22 @@ class Handler(BaseHTTPRequestHandler):
                   {"invited_by": res.get("invited_by", "")}, self._peer_ip())
             return self._send(200, {
                 "ok": True,
+                "connected": True,
                 "service": "access-agent",
                 "version": VERSION,
-                "protocol": "onboarding/0.9.0",
+                "protocol": "onboarding/0.9.1",
                 "invited_by": res.get("invited_by", ""),
                 "token": res.get("token", ""),
                 "agent_token": res.get("token", ""),
                 "expires": res.get("expires", ""),
                 "cert_sha256": cert_fingerprint(),
+                "connection": (
+                    "اتصال همین مکالمه با سرور مالک برقرار شد؛ "
+                    "دعوت مالک معتبر بود و این توکن فقط برای همین مکالمه است."
+                ),
                 "next": ("GET /healthz، سپس GET /api/status با همین توکن "
-                         "(Authorization: Bearer)؛ گزارش به مالک و انتظار فرمان."),
+                         "(Authorization: Bearer)؛ بعد به مالک گزارش بده "
+                         "و منتظر فرمانش بمان."),
                 "end": {"method": "POST", "path": "/api/agent/session/end",
                         "note": "در آخرین پیام مکالمه، به درخواست مالک."},
                 "rules": ONBOARDING_RULES,

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""تست دودی v0.9 — اتصال مستقیم با دعوت‌نامه (حذف تشریفات، فرمان مالک ۲۰۲۶-۱۱-۱۳).
+"""تست دودی v0.9.1 — اتصال مستقیم با دعوت‌نامه + هدایت کوتاه پس از فراخوانی.
 
 جریان کامل، از نگاه هر دو طرف:
   مالک:  GET /api/admin/invite?for=<کاربر> ← دعوت‌نامهٔ یک‌خطی:
@@ -8,6 +8,11 @@
   عامل:  GET /api/agent/onboarding?iid=<iid> ← مستقیماً توکن موقت aagx_ +
          انقضا + راهنمای کوتاه؛ نه رمز، نه claim، نه poll
          → GET /api/status → POST /api/agent/session/end در پایان مکالمه
+
+v0.9.1 (فرمان مالک — چت دوم ۲۰۲۶-۱۱-۱۳): عامل در چت دیگر هدف را نگرفت (iid
+در ترانزیت افتاد). حالا: سند بدون iid هدف + راه اتصال + hint «کل URL را کامل
+بفرست» را می‌دهد؛ پاسخ موفق با connected:true و خط «اتصال برقرار شد» شروع
+می‌شود؛ خطای iid فارسی یک‌خطی است. همه همچنان مختصر — زیاده‌گویی ممنوع.
 
 قرمزها: iid غلط/مصرف‌شده/منقضی، یک دعوت = یک عامل، نرخ‌سنجی خطای iid،
 مسیرهای بازنشسته (claim/claim-poll/onboard/agent-approve → 404)، فقط هش روی
@@ -95,7 +100,7 @@ AGENT = "aa_" + os.urandom(24).hex()   # توکن بلندمدت برای تست
     "agent_sha": hashlib.sha256(AGENT.encode()).hexdigest(),
 }), encoding="utf-8")
 (Path(TMP) / "config.json").write_text(json.dumps({
-    "ip": "203.0.113.7", "port": 9999, "version": "0.9.0",
+    "ip": "203.0.113.7", "port": 9999, "version": "0.9.1",
 }), encoding="utf-8")
 (Path(TMP) / "tls").mkdir(exist_ok=True)
 subprocess.run(
@@ -149,17 +154,27 @@ def main() -> int:
         print(server_log.read())
         return 1
 
-    # ---------- سند آشناسازی بدون iid: کوتاه ----------
+    # ---------- سند آشناسازی بدون iid: کوتاه ولی هدف‌دار (v0.9.1) ----------
     c, b = req("GET", "/api/agent/onboarding")
-    ch("onboarding بدون iid → 200 و پروتکل 0.9.0",
-       c == 200 and b.get("protocol") == "onboarding/0.9.0")
+    ch("onboarding بدون iid → 200 و پروتکل 0.9.1",
+       c == 200 and b.get("protocol") == "onboarding/0.9.1")
     ch("onboarding بدون iid → invite_required=True",
        b.get("invite_required") is True)
+    ch("onboarding بدون iid → connected=False",
+       b.get("connected") is False)
     ch("onboarding: هیچ توکنی در پاسخ نیست",
        "aagx_" not in json.dumps(b) and "adm_" not in json.dumps(b))
     ch("onboarding: سند کوتاه است (بدون trust_model/session_flow)",
        "trust_model" not in b and "session_flow" not in b
        and "reading_order" not in b and "fallback_owner_code" not in b)
+    ch("onboarding: هدف را می‌گوید (پل عامل به سرور مالک)",
+       "عامل" in str(b.get("what_this_is", ""))
+       and "مکالمه" in str(b.get("what_this_is", "")))
+    ch("onboarding: راه اتصال با ?iid را می‌گوید",
+       "?iid=" in str(b.get("how_to_connect", "")))
+    ch("onboarding: hint «بدون iid رسید، کل URL را بفرست» دارد",
+       "بدون iid" in str(b.get("note", ""))
+       and "بدون تغییر" in str(b.get("note", "")))
     ch("onboarding: قواعد کوتاه دارد",
        len(b.get("rules", [])) == 2
        and any("تخریبی" in r for r in b.get("rules", [])))
@@ -168,11 +183,13 @@ def main() -> int:
     c, b = req("POST", "/api/agent/onboarding", body={})
     ch("POST روی onboarding → 405", c == 405)
 
-    # ---------- iid غلط → 404 ----------
+    # ---------- iid غلط → 404 (با توضیح فارسی یک‌خطی) ----------
     c, b = req("GET", "/api/agent/onboarding?iid=inv_deadbeef" + "0" * 16)
     ch("onboarding با iid غلط → 404 unknown_invite",
        c == 404 and b.get("error") == "unknown_invite")
-    ch("onboarding با iid غلط: بدون جزئیات چت", "detail" in b)
+    ch("خطای iid: توضیح فارسی یک‌خطی (دعوت تازه از مالک)",
+       "دعوت" in str(b.get("detail", ""))
+       and "مالک" in str(b.get("detail", "")))
 
     # ---------- مسیرهای بازنشسته → 404 ----------
     for path in ("/api/agent/claim", "/api/agent/claim/poll",
@@ -204,18 +221,23 @@ def main() -> int:
     ch("invite: JSON برچسب کاربر و انقضا را جدا می‌دهد",
        b.get("invited_by") == "رضا" and bool(b.get("expires")))
 
-    # ---------- عامل: GET با iid → توکن مستقیم (بدون رمز/claim/poll) ----------
+    # ---------- عامل: GET با iid → توکن مستقیم + هدایت کوتاه (v0.9.1) ----------
     c, b = req("GET", f"/api/agent/onboarding?iid={IID}")
     ch("onboarding با iid معتبر → 200", c == 200 and b.get("ok") is True)
+    ch("پاسخ با connected=True شروع می‌شود", b.get("connected") is True)
     TOK = str(b.get("token", ""))
     ch("توکن مستقیم aagx_ در همان پاسخ", TOK.startswith("aagx_"))
     ch("agent_token همان توکن است (سازگاری)", b.get("agent_token") == TOK)
     ch("پاسخ برچسب کاربر دعوت را می‌دهد", b.get("invited_by") == "رضا")
     ch("پاسخ انقضا دارد", bool(b.get("expires")))
     ch("پاسخ هش گواهی عمومی دارد", bool(b.get("cert_sha256")))
-    ch("پاسخ پروتکل 0.9.0 دارد", b.get("protocol") == "onboarding/0.9.0")
+    ch("پاسخ پروتکل 0.9.1 دارد", b.get("protocol") == "onboarding/0.9.1")
+    ch("پاسخ خط هدف دارد: «اتصال همین مکالمه برقرار شد»",
+       "اتصال" in str(b.get("connection", ""))
+       and "همین مکالمه" in str(b.get("connection", ""))
+       and "مالک" in str(b.get("connection", "")))
     ch("پاسخ گام بعدی و پایان را می‌گوید",
-       "/healthz" in str(b.get("next", "")) and
+       "/healthz" in str(b.get("next", "")) and "مالک" in str(b.get("next", "")) and
        "/api/agent/session/end" in json.dumps(b.get("end", ""), ensure_ascii=False))
     ch("پاسخ قواعد کوتاه دارد", len(b.get("rules", [])) == 2)
     ch("پاسخ هیچ pairing/claim/code ندارد",
@@ -374,6 +396,8 @@ def main() -> int:
     ch("onboarding_doc: کوتاه و invite_required",
        doc["invite_required"] is True and "trust_model" not in doc)
     ch("onboarding_doc: قواعد دوردیفه", len(doc["rules"]) == 2)
+    ch("onboarding_doc: connected=False و hint بدون-iid",
+       doc.get("connected") is False and "بدون iid" in str(doc.get("note", "")))
     ch("build_invite: یک خط با قالب مالک",
        build_invite("inv_" + "a" * 24).count("\n") == 0
        and build_invite("inv_" + "a" * 24).startswith("لطفا این لینک را دنبال کنید: https://"))

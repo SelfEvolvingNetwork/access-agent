@@ -240,7 +240,6 @@ def revoke_sessions() -> int:
 # هیچ رویدادی مقدار iid یا توکن را لاگ نمی‌کند — فقط هش و بولی.
 
 AGENT_SESSION_TTL_S = 8 * 3600
-AGENT_SESSION_TTL_S = 8 * 3600
 AGENT_SESSIONS_MAX = 5
 
 # نرخ‌سنجی خطای iid (ضد چکش/بروت‌فورس؛ فقط تلاش‌های ناموفق شمرده می‌شوند)
@@ -475,13 +474,13 @@ def claim_invite_session(raw_iid: str, ip: str = "") -> dict:
                       if t > now - ONBOARD_FAIL_WINDOW_S]
             if len(window) >= ONBOARD_FAIL_MAX:
                 return {"ok": False, "status": 429, "error": "rate_limited",
-                        "detail": "too many failed invites from this address "
-                                  "— wait a few minutes"}
+                        "detail": "تلاش ناموفق زیادی از این نشانی — "
+                                  "چند دقیقه بعد دوباره تلاش کنید."}
             window.append(now)
             _ONBOARD_FAIL_RATE[ip] = window
             return {"ok": False, "status": 404, "error": "unknown_invite",
-                    "detail": "invite unknown, expired or already used — ask "
-                              "the owner for a fresh invite"}
+                    "detail": "دعوت ناشناخته، منقضی یا قبلاً مصرف‌شده است — "
+                              "از مالک سرور دعوت‌نامهٔ تازه بگیرید."}
         # یک دعوت = یک عامل؛ مصرف با نخستین توکن
         _use_invite(str(invite.get("iid_sha", "")))
         raw, sess = mint_agent_session(ip=ip, origin="invite",
