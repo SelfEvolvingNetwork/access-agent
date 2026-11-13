@@ -18,11 +18,13 @@
 #    show-github-app         app config summary (no secrets)
 #    clear-github-app        remove app config; broker falls back to PAT mode
 #    handoff                 ready-to-paste handoff block (legacy, <=0.6.x agents)
-#    invite [for-user] [ttl_h]  one-line user-bound invite (v0.9): the URL
-#                            carries a one-time invite id; the agent GETs it
-#                            and the server directly issues the temporary
-#                            session token — no code, no approval, no polling
-#                            (owner decree 2026-11-13)
+#    invite [owner|user] [for-user] [ttl_h]  one-line role-bound invite (v0.10):
+#                            owner → pinv_ (full agent realm, pst_ 30d token)
+#                            user  → uinv_ (restricted realm, pst_ 24h token)
+#                            legacy form `invite [for-user] [ttl_h]` = user role.
+#                            The agent GETs the URL and the server directly
+#                            issues the role-scoped temporary session token
+#                            (owner decree 2026-11-13: owner/customer pattern)
 #    revoke-agent-sessions    kill ALL temporary agent pairing sessions
 #    audit [N]               tail of the audit log (default 30)
 #    autoupdate on|off       arm/disarm the server-side self-update timer (v0.8.3)
@@ -44,7 +46,11 @@ CMD="${1:-help}"
 
 cfg_port() { python3 -c "import json;print(json.load(open('$ETC/config.json'))['port'])" 2>/dev/null || echo ""; }
 cfg_ip()   { python3 -c "import json;print(json.load(open('$ETC/config.json')).get('ip',''))" 2>/dev/null || echo ""; }
-url()      { echo "https://$(cfg_ip):$(cfg_port)"; }
+# v0.10 — پورت 443 پیش‌فرض HTTPS است و در URL نمی‌آید (فرمان مالک: پورت رایج)
+url() {
+  P="$(cfg_port)"; I="$(cfg_ip)"
+  if [ "$P" = "443" ]; then echo "https://$I"; else echo "https://$I:$P"; fi
+}
 
 set_agent_hash() { # $1 = sha256 hex or ""
   python3 - "$ETC" "$1" <<'PY'
@@ -172,14 +178,17 @@ print(build_block())
 PY
     ;;
   invite)
-    # v0.9 — دعوت‌نامهٔ یک‌خطی: invite [for-user] [ttl_h]
+    # v0.10 — دعوت‌نامهٔ یک‌خطی نقش‌دار (الگوی مالک/کاربر): invite [owner|user] [برچسب] [ttl_h]
     OPT_DIR="${ACCESS_AGENT_OPT:-/opt/access-agent}"
     if [ ! -f "$OPT_DIR/access_agent/handoff.py" ]; then
       die "handoff module missing — upgrade first: re-run bootstrap.sh"
     fi
-    LABEL="${2:-}"
-    TTL_H="${3:-24}"
-    ACCESS_AGENT_HOME="$ETC" python3 - "$OPT_DIR" "$LABEL" "$TTL_H" <<'PY'
+    ROLE="user"; LABEL=""; TTL_H="24"
+    case "${2:-}" in
+      owner|user) ROLE="$2"; LABEL="${3:-}"; TTL_H="${4:-24}" ;;
+      *)          LABEL="${2:-}"; TTL_H="${3:-24}" ;;  # قالب قدیمی: invite [برچسب] [ttl_h]
+    esac
+    ACCESS_AGENT_HOME="$ETC" python3 - "$OPT_DIR" "$ROLE" "$LABEL" "$TTL_H" <<'PY'
 import sys
 sys.path.insert(0, sys.argv[1])
 from access_agent.handoff import build_invite, invite_missing_inputs
@@ -187,9 +196,10 @@ from access_agent.security import mint_invite, sanitize_invite_label
 miss = invite_missing_inputs()
 if miss:
     raise SystemExit(f"invite data missing: {', '.join(miss)}")
-label = sanitize_invite_label(sys.argv[2])
-ttl_h = max(1, min(int(sys.argv[3]), 168))
-iid, rec = mint_invite(label, ttl_s=ttl_h * 3600)
+role = sys.argv[2]
+label = sanitize_invite_label(sys.argv[3])
+ttl_h = max(1, min(int(sys.argv[4]), 168))
+iid, rec = mint_invite(label, ttl_s=ttl_h * 3600, role=role)
 print(build_invite(iid))
 PY
     ;;

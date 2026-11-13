@@ -243,6 +243,40 @@ def revoke_sessions() -> int:
 AGENT_SESSION_TTL_S = 8 * 3600
 AGENT_SESSIONS_MAX = 5
 
+# ---------- v0.10 — الگوی اتصال مالک/کاربر (فرمان مالک ۲۰۲۶-۱۱-۱۳) ----------
+# «این الگو را برای دو اتصال مالک و کاربران استفاده کنید»: پیشوند دعوت‌نامه
+# نقش را تعیین می‌کند — pinv_ (مالک) → نشست pst_ تا ۳۰ روز با قلمرو کامل عامل؛
+# uinv_ (کاربر) → نشست pst_ تا ۲۴ ساعت با قلمرو محدود (status فیلترشده؛
+# exec و توکن گیت‌هاب ممنوع). inv_ قدیمی برای سازگاری (اپ موبایل و دعوت‌های
+# زندهٔ پیش از 0.10) همان قلمرو عامل کامل با توکن aagx_ می‌ماند.
+INVITE_ROLE_PREFIXES = {"owner": "pinv_", "user": "uinv_", "agent": "inv_"}
+OWNER_SESSION_TTL_S = 30 * 24 * 3600
+USER_SESSION_TTL_S = 24 * 3600
+SESSION_TTL_MAX_S = 30 * 24 * 3600
+SESSION_TTL_BY_ROLE = {"owner": OWNER_SESSION_TTL_S,
+                       "user": USER_SESSION_TTL_S,
+                       "agent": AGENT_SESSION_TTL_S}
+TOKEN_PREFIX_BY_ROLE = {"owner": "pst_", "user": "pst_", "agent": "aagx_"}
+
+
+def normalize_invite_role(role: str) -> str:
+    """نقش دعوت/نشست — فقط سه مقدار مجاز؛ هر چیز دیگری user (محافظه‌کار)."""
+    r = str(role or "").strip().lower()
+    return r if r in INVITE_ROLE_PREFIXES else "user"
+
+
+def role_of_iid(raw_iid: str) -> str:
+    """نقش از پیشوند iid — pinv_→owner، uinv_→user، inv_→agent (سازگاری)."""
+    for role, prefix in INVITE_ROLE_PREFIXES.items():
+        if str(raw_iid or "").startswith(prefix):
+            return role
+    return "agent"
+
+
+def iso_utc(ts: float) -> str:
+    """ISO-8601 UTC با پسوند Z — قالب انقضای پاسخ اتصال به الگوی مالک (v0.10)."""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+
 # نرخ‌سنجی خطای iid (ضد چکش/بروت‌فورس؛ فقط تلاش‌های ناموفق شمرده می‌شوند)
 ONBOARD_FAIL_WINDOW_S = 300
 ONBOARD_FAIL_MAX = 10
@@ -272,8 +306,14 @@ def save_agent_sessions(data: dict) -> None:
 
 def mint_agent_session(ttl_s: int = AGENT_SESSION_TTL_S, ip: str = "",
                         origin: str = "invite",
-                        invited_by: str = "") -> tuple[str, dict]:
+                        invited_by: str = "",
+                        role: str = "agent") -> tuple[str, dict]:
     """توکن موقت نشست عامل — raw فقط یک بار در پاسخ همین درخواست برمی‌گردد.
+
+    role (v0.10): "owner" | "user" | "agent" — از پیشوند دعوت‌نامه می‌آید و
+    قلمرو فراخوانی‌های بعدی همین توکن را تعیین می‌کند (گارد سمت سرور؛ مقدار
+    نقش راز نیست). پیشوند توکن: pst_ برای مالک/کاربر (الگوی مالک)، aagx_ برای
+    سازگاری با نشست‌های قدیمی.
 
     origin: خاستگاه نشست برای forensics — v0.9: "invite" (دعوت با iid؛
     v0.7.2 پیش‌تر pairing/onboard بود). فقط برچسب است؛ هیچ تفاوتی در قلمرو
@@ -282,13 +322,16 @@ def mint_agent_session(ttl_s: int = AGENT_SESSION_TTL_S, ip: str = "",
     فقط forensics/گزارش مالک؛ راز نیست.
     """
     import secrets as pysecrets
-    raw = "aagx_" + pysecrets.token_hex(24)
+    role = normalize_invite_role(role)
+    raw = TOKEN_PREFIX_BY_ROLE.get(role, "aagx_") + pysecrets.token_hex(24)
     now = time.time()
-    ttl_s = max(60, min(int(ttl_s), 24 * 3600))
+    ttl_s = max(60, min(int(ttl_s), SESSION_TTL_MAX_S))
     rec = {
         "sha": sha256_hex(raw),
         "created": now_iso(),
         "expires": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(now + ttl_s)),
+        "expires_ts": now + ttl_s,
+        "role": role,
         "ip": ip,
         "origin": str(origin)[:24],
         "invited_by": str(invited_by)[:40],
@@ -309,6 +352,22 @@ def check_agent_session(presented: str) -> bool:
         save_agent_sessions(data)
     h = sha256_hex(presented)
     return any(hmac.compare_digest(h, s.get("sha", "")) for s in live)
+
+
+def agent_session_role(presented: str) -> str:
+    """نقش نشست عاملِ ارائه‌شده — owner|user|agent؛ "" اگر نشستی نیست.
+
+    مقدار نقش از رکورد نشست می‌آید (نقش در لحظه صدور با پیشوند دعوت ثابت
+    شده)؛ هرگز از پیشوند خودِ توکن اعتماد نمی‌کنیم — فقط هش مقایسه می‌شود."""
+    if not presented:
+        return ""
+    data = load_agent_sessions()
+    live = _prune_sessions(data.get("sessions", []))
+    h = sha256_hex(presented)
+    for s in live:
+        if hmac.compare_digest(h, str(s.get("sha", ""))):
+            return str(s.get("role", "agent")) or "agent"
+    return ""
 
 
 def revoke_agent_session(presented: str) -> bool:
@@ -403,19 +462,23 @@ def sanitize_invite_label(label: str) -> str:
     return label
 
 
-def mint_invite(invited_by: str = "", ttl_s: int = INVITE_TTL_S_DEFAULT) -> tuple[str, dict]:
+def mint_invite(invited_by: str = "", ttl_s: int = INVITE_TTL_S_DEFAULT,
+                role: str = "user") -> tuple[str, dict]:
     """ساخت دعوت‌نامهٔ کاربر-مند — raw فقط یک بار برمی‌گردد (برای بلوک دعوت).
 
+    role (v0.10 — الگوی مالک/کاربر): pinv_ مالک / uinv_ کاربر / inv_ قدیمی.
     invited_by راز نیست؛ در پاسخ آشناسازی عامل و پاسخ تأیید مالک دیده
     می‌شود تا «پای کدام کاربر» بودن دعوت روشن باشد. دعوت تک‌مصرف است (یک
     دعوت = یک عامل)؛ claims فقط شمارندهٔ forensics است (۱ پس از مصرف)."""
     import secrets as pysecrets
     label = sanitize_invite_label(invited_by)
+    role = normalize_invite_role(role)
     ttl_s = max(300, min(int(ttl_s), INVITE_TTL_S_MAX))
     now = time.time()
-    raw = "inv_" + pysecrets.token_hex(12)
+    raw = INVITE_ROLE_PREFIXES[role] + pysecrets.token_hex(12)
     rec = {
         "iid_sha": sha256_hex(raw),
+        "role": role,
         "invited_by": label,
         "created": now_iso(),
         "created_ts": now,
@@ -501,10 +564,18 @@ def claim_invite_session(raw_iid: str, ip: str = "") -> dict:
                               "از مالک سرور دعوت‌نامهٔ تازه بگیرید."}
         # یک دعوت = یک عامل؛ مصرف با نخستین توکن
         _use_invite(str(invite.get("iid_sha", "")))
-        raw, sess = mint_agent_session(ip=ip, origin="invite",
-                                       invited_by=str(invite.get("invited_by", "")))
+        # v0.10 — نقش از رکورد دعوت می‌آید (پیشوند pinv_/uinv_/inv_ لحظهٔ ساخت
+        # تعیینش کرده)؛ فالبک prefix برای دعوت‌های قدیمیِ بدون رکورد نقش.
+        role = str(invite.get("role") or "") or role_of_iid(raw_iid)
+        role = normalize_invite_role(role)
+        ttl = SESSION_TTL_BY_ROLE.get(role, AGENT_SESSION_TTL_S)
+        raw, sess = mint_agent_session(ttl_s=ttl, ip=ip, origin="invite",
+                                       invited_by=str(invite.get("invited_by", "")),
+                                       role=role)
+    exp_ts = float(sess.get("expires_ts") or 0.0) or _parse_iso(str(sess.get("expires", "")))
     return {"ok": True, "token": raw, "agent_token": raw,
-            "expires": sess.get("expires", ""),
+            "role": role,
+            "expires": iso_utc(exp_ts) if exp_ts else str(sess.get("expires", "")),
             "invited_by": str(invite.get("invited_by", ""))}
 
 

@@ -13,6 +13,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from .security import INVITE_ROLE_PREFIXES, role_of_iid
+
 PROTOCOL_URL = ("https://raw.githubusercontent.com/SelfEvolvingNetwork/"
                 "access-agent/main/docs/AGENT_PROTOCOL.fa.md")
 PARASTOO_LOOP_URL = ("https://raw.githubusercontent.com/SelfEvolvingNetwork/"
@@ -132,59 +134,106 @@ if __name__ == "__main__":
 # دعوت به انتهای مسیر می‌رود (…/onboarding/inv_…) — چون رشتهٔ query (?iid=)
 # در ترانزیت ابزارهای عامل گاهی می‌افتد؛ قالب query برای سازگاری می‌ماند.
 ONBOARDING_ENDPOINT = "/api/agent/onboarding"
+GARDESH_SEGMENT = "gardesh"  # v0.10 — الگوی مالک: قالب مسیر /onboarding/gardesh/<iid>
+DEFAULT_PORT = 443  # v0.10 — «پورت اتصال پل یک پورت رایج»؛ در نصب تازه پیش‌فرض است
+
+
+def public_base_url() -> str:
+    """v0.10 — نشانی عمومی سرویس: host (اگر دامنه ثبت شده) یا ip؛
+    پورت 443 که پیش‌فرض HTTPS است هرگز در URL نمی‌آید (الگوی مالک)."""
+    cfg = _cfg()
+    host = str(cfg.get("host") or cfg.get("ip") or "").strip()
+    if not host:
+        return ""
+    try:
+        port = int(cfg.get("port") or 0)
+    except (TypeError, ValueError):
+        port = 0
+    if port and port != DEFAULT_PORT:
+        return f"https://{host}:{port}"
+    return f"https://{host}"
 
 
 def invite_missing_inputs() -> list[str]:
     cfg = _cfg()
     miss: list[str] = []
-    if not (cfg.get("ip") and cfg.get("port")):
-        miss.append("config.json(ip/port)")
+    if not (cfg.get("ip") or cfg.get("host")) or not cfg.get("port"):
+        miss.append("config.json(ip|host/port)")
     if not cert_fingerprint():
         miss.append("tls/cert.pem")
     return miss
 
 
 def build_invite(iid: str) -> str:
-    """v0.9.2 — دعوت‌نامهٔ یک‌خطی به فرمان مالک (۲۰۲۶-۱۱-۱۳، چت سوم).
+    """v0.10 — دعوت‌نامهٔ یک‌خطی به الگوی مالک (فرمان ۲۰۲۶-۱۱-۱۳: «لطفا با
+    api من یک اتصال پایدار ایجاد کنید» + پورت رایج).
 
-    متن دعوت فقط همین یک خط است — هیچ رمز/هش/توضیح اضافه ندارد؛ سرور پس از
-    فراخوانی لینک، خودش توضیحات لازم را در همان پاسخ می‌دهد (توکن موقت +
-    راهنمای کوتاه). TTL و برچسب کاربر در پاسخ JSON مسیر ادمین می‌مانند.
-    پارامتر دعوت در انتهای مسیر است (…/onboarding/inv_…): سبکِ query گاهی
-    در ترانزیت عامل‌ها می‌افتاد؛ این قالب مقاوم است و هر دو پذیرفته‌اند.
+    متن دعوت فقط همین یک خط است — نقش از پیشوند iid معلوم می‌شود:
+    pinv_ مالک و uinv_ کاربر روی قالب gardesh (…/onboarding/gardesh/pinv_…)؛
+    inv_ قدیمی روی قالب ساده (سازگاری با دعوت‌های زنده و اپ موبایل). خودِ سرور
+    پس از فراخوانی لینک، توکن نقش‌دار (pst_) و راهنما را در همان پاسخ می‌دهد.
+    TTL و برچسب کاربر در پاسخ JSON مسیر ادمین می‌مانند. پورت 443 پیش‌فرضِ
+    HTTPS است و در URL نمی‌آید؛ دعوت مالک با IP خام (پیش از استقرار دامنه)
+    و دعوت کاربر با دامنه — هر دو همین یک ساختار را دارند (فرمان مالک).
     """
     miss = invite_missing_inputs()
     if miss:
         raise RuntimeError("invite data missing: " + ", ".join(miss))
-    if not iid or not iid.startswith("inv_"):
+    if not iid or not any(iid.startswith(p) for p in INVITE_ROLE_PREFIXES.values()):
         raise RuntimeError("invite id missing — mint one via security.mint_invite")
-    cfg = _cfg()
-    return ("لطفا این لینک را دنبال کنید: "
-            f"https://{cfg['ip']}:{cfg['port']}{ONBOARDING_ENDPOINT}/{iid}")
+    role = role_of_iid(iid)
+    base = public_base_url()
+    if role in ("owner", "user"):  # الگوی مالک — قالب gardesh
+        url = f"{base}{ONBOARDING_ENDPOINT}/{GARDESH_SEGMENT}/{iid}"
+    else:  # inv_ قدیمی — قالب ساده برای سازگاری
+        url = f"{base}{ONBOARDING_ENDPOINT}/{iid}"
+    return "لطفا با api من یک اتصال پایدار ایجاد کنید: " + url
 
 
 # v0.9.3 (فرمان مالک ۲۰۲۶-۱۱-۱۳ — چت پنجم): قاعدهٔ دوم شفاف شد — چاپ و
 # انتشار «مقدار» توکن همچنان ممنوع است، اما اطلاع‌رسانیِ دریافت و نگه‌داری
-# به کاربر واجب است (سه جملهٔ tell_user در پاسخ اتصال) و کاربر می‌تواند
-# هر زمان توکن را از پنل خودش باطل کند.
+# به کاربر واجب است و کاربر می‌تواند هر زمان توکن را از پنل خودش باطل کند.
+# v0.10 (فرمان مالک ۲۰۲۶-۱۱-۱۳ — الگوی مالک/کاربر): این قواعد به
+# /api/docs (مرجع فنی کامل) منتقل شد و پاسخ اتصال سبک و داده‌محور شد.
 ONBOARDING_RULES = [
     "عملیات تخریبی بدون تأیید صریح مالک ممنوع است.",
     ("توکن فقط برای همین مکالمه است؛ مقدارش را در گفتگو، گزارش یا لاگ چاپ "
-     "و منتشر نکن، اما دریافت و نگه‌داری‌اش را طبق tell_user شفاف به کاربر "
-     "اطلاع بده؛ او می‌تواند هر زمان از پنل، آن را باطل کند."),
+     "و منتشر نکن، اما دریافت و نگه‌داری‌اش را شفاف به کاربر اطلاع بده؛ "
+     "او می‌تواند هر زمان از پنل، آن را باطل کند."),
 ]
+
+# v0.10 — قلمرو فراخوانی بر پایهٔ نقش (الگوی مالک/کاربر؛ جزئیات کامل: /api/docs)
+ROLE_SCOPES = {
+    "owner": [
+        "GET /healthz", "GET /api/status", "GET /api/docs",
+        "POST /api/exec", "POST /api/github/token",
+        "POST /api/agent/session/end",
+    ],
+    "agent": [  # سازگاری — دعوت‌های قدیمی inv_ و توکن بلندمدت aa_
+        "GET /healthz", "GET /api/status", "GET /api/docs",
+        "POST /api/exec", "POST /api/github/token",
+        "POST /api/agent/session/end",
+    ],
+    "user": [
+        "GET /healthz", "GET /api/status (نسخهٔ فیلترشده)", "GET /api/docs",
+        "POST /api/agent/session/end",
+    ],
+}
+
+
+def docs_url() -> str:
+    """v0.10 — لینک مستندات فنی که پاسخ اتصال می‌برد (الگوی مالک)."""
+    base = public_base_url()
+    return f"{base}/api/docs" if base else ""
 
 
 def onboarding_doc() -> dict:
-    """پاسخ GET /api/agent/onboarding بدون iid — فقط‌خواندنی و کوتاه (v0.9.2؛ v0.9.3 قواعد شفاف).
+    """پاسخ GET /api/agent/onboarding بدون iid — فقط‌خواندنی و کوتاه (v0.10).
 
-    درس میدان ۲۰۲۶-۱۱-۱۳ (چت دوم مالک): iid گاهی در ترانزیت چت می‌افتد و عامل
-    بدون سند، هدف را نمی‌فهمید. سند حالا در سه خط کوتاه هدف و راه اتصال و
-    راهنمایِ «کل URL را کامل بفرست» را می‌دهد — فراخوانی موفق همان توضیحات
-    را با خودِ توکن می‌دهد؛ اینجا فقط جهت‌دهی است (فرمان مالک: مختصر، پس از
-    فراخوانی متد، برای اعتمادسازی). v0.9.2: هر دو قالب URL معرفی می‌شوند.
-    v0.9.3: قاعدهٔ دوم شفاف شد — چاپ مقدار توکن ممنوع ماند اما اطلاع‌رسانی
-    دریافت و نگه‌داری به کاربر واجب شد (tell_user در پاسخِ دارای iid).
+    درس میدان ۲۰۲۶-۱۱-۱۳: iid گاهی در ترانزیت چت می‌افتد و عامل بدون سند،
+    هدف را نمی‌فهمید. سند در چند خط کوتاه هدف و راه اتصال (هر دو قالب
+    مسیری + قالب قدیمی query) و لینک مستندات فنی را می‌دهد؛ فراخوانی موفق
+    همان توضیحات را با خودِ توکن می‌دهد — اینجا فقط جهت‌دهی است.
     """
     from .security import AGENT_SESSION_TTL_S
     cfg = _cfg()
@@ -193,22 +242,57 @@ def onboarding_doc() -> dict:
         "connected": False,
         "service": "access-agent",
         "version": str(cfg.get("version", "")),
-        "protocol": "onboarding/0.9.3",
+        "protocol": f"onboarding/{cfg.get('version', '')}",
         "invite_required": True,
         "what_this_is": (
             "پل دسترسی عامل هوش مصنوعی به سرورِ مالک است؛ با دعوت مالک، "
             "همین مکالمه به سرور وصل می‌شود."
         ),
         "how_to_connect": (
-            "کل URL دعوت‌نامه را دقیقاً همان‌طور که دریافت کردید GET کنید "
-            "(قالب رایج: …/api/agent/onboarding/inv_… با پارامتر در انتهای "
-            "مسیر؛ قالب قدیمی‌تر ?iid=… هم پذیرفته می‌شود)؛ همان پاسخ توکن "
-            "موقت و راهنمای کوتاه را می‌دهد."
+            "کل URL دعوت‌نامه را دقیقاً همان‌طور که دریافت کردید GET کنید — "
+            "قالب رایج: …/api/agent/onboarding/gardesh/pinv_… یا gardesh/uinv_…؛ "
+            "دعوت‌های قدیمی: …/api/agent/onboarding/inv_…؛ قالب قدیمی‌تر "
+            "?iid=… هم پذیرفته می‌شود. همان پاسخ توکن موقت و راهنمای کوتاه را می‌دهد."
         ),
         "note": (
-            "این فراخوانی بدون iid رسید؛ اگر لینک دعوت شما inv_… دارد، "
-            "همان را کامل و بدون تغییر فراخوانی کنید."
+            "این فراخوانی بدون iid رسید؛ اگر لینک دعوت شما pinv_/uinv_/inv_… "
+            "دارد، همان را کامل و بدون تغییر فراخوانی کنید."
         ),
+        "docs": docs_url(),
         "session_ttl_s": AGENT_SESSION_TTL_S,
         "rules": ONBOARDING_RULES,
+    }
+
+
+# ---------- v0.10 — پاسخ اتصال به الگوی مالک (دو اتصال: مالک و کاربران) ----------
+# فرمان مالک ۲۰۲۶-۱۱-۱۳: پاسخ فراخوانی دعوت‌نامه دقیقاً به این الگو —
+# تک‌مصرف بودن لینک، agent_token (pst_)، انقضای UTC (Z)، یادآوری توکن‌تنها،
+# پیشنهاد فایل ایمن و لینک مستندات فنی. داده است، نه دستور رفتاری —
+# قواعد و راهنما در /api/docs و AGENT_PROTOCOL §۶ زندگی می‌کنند.
+
+def build_connection_payload(res: dict, *, version: str, cert_sha: str) -> dict:
+    """قالب پاسخ اتصال موفق — برای هر دو اتصال مالک (pinv_) و کاربر (uinv_)
+    و دعوت قدیمی (inv_) یکسان؛ فقط role و scope تفاوت را می‌گویند."""
+    role = str(res.get("role") or "agent")
+    return {
+        "ok": True,
+        "connected": True,
+        "service": "access-agent",
+        "version": version,
+        "protocol": f"onboarding/{version}",
+        "role": role,
+        "invited_by": str(res.get("invited_by", "")),
+        "message": ("لینک یکبار مصرف شما معتبر است ولی ارسال بعدی آن "
+                    "نامعتبر خواهد بود."),
+        "agent_token": str(res.get("token", "")),
+        "token": str(res.get("token", "")),  # سازگاری با عامل‌های قدیمی
+        "expires": str(res.get("expires", "")),
+        "auth_note": "درخواست های بعدی شما فقط با این توکن معتبر خواهد بود.",
+        "storage_hint": ("پیشنهاد میشود توکن عامل را در یک فایل موقت و ایمن "
+                         "ذخیره کنید."),
+        "docs": docs_url(),
+        "scope": ROLE_SCOPES.get(role, ROLE_SCOPES["agent"]),
+        "cert_sha256": cert_sha,
+        "end": {"method": "POST", "path": "/api/agent/session/end",
+                "note": "در آخرین پیام مکالمه، به درخواست مالک."},
     }

@@ -28,6 +28,9 @@
   می‌کند؛ خرابی کش یا دستکاری در مسیر، در اپ رد می‌شود.
 - v0.9 — نقشهٔ اندپوینت‌ها بدون agent_approve (تأیید انسانی حذف شد؛ اتصال
   با دعوت‌نامهٔ یک‌خطی مستقیم است — AGENT_PROTOCOL §۱.۵): revision 5.
+- v0.10 — الگوی اتصال مالک/کاربر: نقشهٔ ر۶ اندپوینت عمومی مستندات فنی
+  (/api/docs) را اضافه می‌کند — همان لینکی که پاسخ اتصال می‌برد؛ نقش‌ها
+  (pinv_/uinv_) فقط در مستندات، نه در نقشهٔ اپ — اپ با ادمین کار می‌کند.
 """
 from __future__ import annotations
 
@@ -54,11 +57,12 @@ _PATH_RE = re.compile(r"^/[A-Za-z0-9_\-./?=&]{1,119}$")
 # پیش‌فرض جاسازی‌شده — با assets/core/parastoo-core.json اپ هم‌نگه داشته می‌شود.
 DEFAULT_PAYLOAD: dict = {
     "schema": SCHEMA,
-    "revision": 5,
+    "revision": 6,
     "min_version_code": 17,  # اپ 0.4.12 — اولین نسخه با موتور هستهٔ هات
     "config": {
         "endpoints": {
             "healthz": "/healthz",
+            "docs": "/api/docs",
             "status": "/api/status",
             "audit": "/api/admin/audit",
             "audit_stream": "/api/admin/audit/stream",

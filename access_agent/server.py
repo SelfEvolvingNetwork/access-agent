@@ -3,11 +3,14 @@
 Endpoints (v0.5):
   GET  /                          public service info
   GET  /healthz                   public lightweight health
+  GET  /api/docs                 public technical API reference (v0.10 —
+                                  the docs link the onboarding response
+                                  carries; full endpoint/role/error model)
   GET  /api/agent/onboarding      public read-only onboarding doc; with
                                   ?iid=<invite-id> (v0.9) the invite itself
                                   is the credential: the server DIRECTLY
                                   issues the temporary agent session token
-                                  (aagx_) in the same response — no pairing
+                                  in the same response — no pairing
                                   code, no polling (owner decree 2026-11-13).
                                   v0.9.2: the invite id may ALSO ride the
                                   path — GET /api/agent/onboarding/inv_… —
@@ -16,9 +19,18 @@ Endpoints (v0.5):
                                   forms are public and equivalent. Invites
                                   stay one-time (owner decree, chat 4: the
                                   server's counterparty must stay exactly
-                                  one agent); the response instructs the
-                                  agent to keep the token in its own local
-                                  secret file for the conversation.
+                                  one agent).
+                                  v0.10 (owner pattern 2026-11-13): two
+                                  connection roles — gardesh/pinv_… mints
+                                  an OWNER session token (pst_, 30d, full
+                                  agent realm) and gardesh/uinv_… a USER
+                                  session token (pst_, 24h, restricted:
+                                  filtered /api/status; /api/exec and
+                                  /api/github/token forbidden 403);
+                                  legacy inv_ keeps the old agent realm.
+                                  The response follows the owner's one-shot
+                                  pattern: message/agent_token/expires(Z)/
+                                  auth_note/storage_hint/docs.
   GET  /api/admin/invite          admin one-line invite (v0.9): mints a
                                   user-bound one-time invite (?for=<label>,
                                   ?ttl_h=1..168 default 24) whose URL carries
@@ -95,16 +107,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import VERSION
-from . import appcore, bridgeuninstall, githubapp, parastoolifecycle
+from . import appcore, apidocs, bridgeuninstall, githubapp, parastoolifecycle
 from .execbridge import run_exec
 from .githubbroker import disclose, grants_tail, save_token, stored_token
-from .handoff import (ONBOARDING_RULES, build_block, build_invite,
-                      cert_fingerprint, onboarding_doc)
-from .security import (audit, audit_tail, agent_paused, check_agent_session,
-                       check_token, claim_invite_session,
-                       clear_agent_sessions, home, load_state, load_tokens,
-                       mint_invite, now_iso, sanitize_invite_label,
-                       save_tokens, revoke_agent_session, set_agent_paused,
+from .handoff import (build_block, build_connection_payload,
+                      build_invite, cert_fingerprint, onboarding_doc)
+from .security import (agent_session_role, audit, audit_tail, agent_paused,
+                       check_agent_session, check_token,
+                       claim_invite_session, clear_agent_sessions, home,
+                       load_state, load_tokens, mint_invite, now_iso,
+                       normalize_invite_role, revoke_agent_session,
+                       sanitize_invite_label, save_tokens, set_agent_paused,
                        sha256_hex)
 
 MAX_BODY = 100_000
@@ -126,7 +139,8 @@ POST_ONLY = {
     "/api/agent/session/end",
     "/api/admin/revoke-agent-sessions",
 }
-GET_ONLY = {"/", "/healthz", "/api/agent/onboarding", "/api/status", "/api/admin/audit",
+GET_ONLY = {"/", "/healthz", "/api/docs", "/api/agent/onboarding", "/api/status",
+            "/api/admin/audit",
             "/api/admin/audit/stream", "/api/admin/sessions",
             "/api/admin/agent-token", "/api/admin/handoff",
             "/api/admin/invite",
@@ -197,6 +211,16 @@ def host_status() -> dict:
     }
 
 
+def user_status() -> dict:
+    """v0.10 — وضعیت فیلترشده برای نقش user (الگوی مالک/کاربر): فقط سنجه‌های
+    عمومی؛ مسیرهای داخلی، docker، توکن گیت‌هاب و وضعیت قلمروها دیده نمی‌شوند."""
+    full = host_status()
+    return {k: full[k] for k in (
+        "ok", "service", "version", "uptime_s", "host_uptime_s",
+        "disk_percent", "disk_free_gb", "mem_total_mb", "mem_avail_mb",
+    ) if k in full}
+
+
 def validate_github_token(token: str) -> dict:
     """Best-effort online validation (never blocks saving)."""
     result = {"validated": False, "login": "", "note": ""}
@@ -251,14 +275,44 @@ class Handler(BaseHTTPRequestHandler):
     def _role(self) -> str:
         """Return "admin" | "agent" | "" (unauthenticated).
 
-        v0.7: توکن موقت نشست عامل (aagx_) هم نقش agent می‌گیرد —
-        همان قلمرو، همان audit؛ فقط عمرش کوتاه و ابطالش مستقل است."""
+        v0.7: توکن موقت نشست عامل هم نقش agent می‌گیرد —
+        همان قلمرو، همان audit؛ فقط عمرش کوتاه و ابطالش مستقل است.
+        v0.10: تفکیک ریزتر قلمرو در _session_scope انجام می‌شود (owner/user)."""
         tok = self._bearer()
         if tok and check_token(tok, "admin"):
             return "admin"
         if tok and (check_token(tok, "agent") or check_agent_session(tok)):
             return "agent"
         return ""
+
+    def _session_scope(self) -> str:
+        """v0.10 — قلمرو ریز توکن ارائه‌شده: admin | owner | agent | user | "".
+
+        admin: توکن ادمین (superset). agent: توکن بلندمدت aa_ یا نشست قدیمی
+        inv_ (قلمرو کامل). owner/user: نشست‌های نقش‌دار v0.10 که نقش‌شان از
+        رکورد نشست (تعیین‌شده با پیشوند دعوت در لحظهٔ صدور) می‌آید — هرگز از
+        خود رشتهٔ توکن."""
+        tok = self._bearer()
+        if not tok:
+            return ""
+        if check_token(tok, "admin"):
+            return "admin"
+        if check_token(tok, "agent"):
+            return "agent"
+        if check_agent_session(tok):
+            return agent_session_role(tok) or "agent"
+        return ""
+
+    def _user_scope_guard(self, path: str) -> bool:
+        """v0.10 — گارد نقش user (الگوی مالک/کاربر): exec و توکن گیت‌هاب برای
+        نشست کاربر ممنوع است. True اگر رد شد (پاسخ 403 فرستاده شد)."""
+        if self._session_scope() != "user":
+            return False
+        audit("agent", "agent_scope_forbidden", {"path": path}, self._peer_ip())
+        self._send(403, {"ok": False, "error": "agent_scope_forbidden",
+                         "detail": "این اندپوینت در قلمرو نشست کاربر مجاز نیست — "
+                                   "کاربر می‌تواند سلامت و وضعیت فیلترشده را بخواهد."})
+        return True
 
     def _read_body(self) -> bytes | None:
         try:
@@ -340,29 +394,33 @@ class Handler(BaseHTTPRequestHandler):
                                     "cert_sha256": cert_fingerprint()})
         if path == "/":
             return self._send(200, {"ok": True, "service": "access-agent", "version": VERSION,
-                                    "detail": "independent AI-agent bridge; see /healthz and /api/status",
+                                    "detail": "independent AI-agent bridge; see /healthz, /api/docs and /api/status",
                                     "agent_connected": bool(self._role())})
+        # v0.10 — مرجع فنی کامل (عمومی): لینک مستنداتی که پاسخ اتصال می‌برد
+        if path == "/api/docs":
+            audit("anon", "api_docs_read", {}, self._peer_ip())
+            return self._send(200, apidocs.docs_payload(VERSION))
         # v0.9.1 — اتصال مستقیم: خودِ iid اعتبار است؛ نه رمز، نه poll (فرمان
         # مالک ۲۰۲۶-۱۱-۱۳). بدون iid فقط سند کوتاه؛ با iid توکن در همان پاسخ.
-        # فرمان مالک (چت دوم ۲۰۲۶-۱۱-۱۳): توضیحِ بیشتر ولی مختصر، پس از فراخوانی —
-        # پاسخ با «connected: true» و یک خط هدف شروع می‌شود تا عامل بداند چه
-        # رخ داده و بعد چه کند (اعتمادسازی از خود سرور، نه از متن دعوت).
         # v0.9.2 (فرمان مالک — چت‌های سوم/چهارم): قالب دوم — iid در انتهای مسیر
         # (/onboarding/inv_…)؛ چون رشتهٔ query گاهی در ترانزیت ابزار عامل
-        # می‌افتاد. هر دو قالب عمومی و هم‌ارزند؛ دعوت تک‌مصرف می‌ماند و پاسخ
-        # عامل را هدایت می‌کند توکن را در فایل سکرتِ خودش نگه دارد.
-        # v0.9.3 (فرمان مالک — چت پنجم ۲۰۲۶-۱۱-۱۳): شفافیت توکن به کاربر —
-        # پاسخ اتصال عامل را موظف می‌کند دریافتِ توکن (بدون چاپ مقدار)،
-        # ذخیره در فایل سکرت و ابطال‌پذیری از پنل را در همان نوبت به کاربر
-        # اطلاع دهد (فیلد tell_user)؛ «گزارش و انتظار فرمان» به «گزارش در
-        # همان مکالمه و عمل فقط با درخواست صریح مالک» دقیق شد.
+        # می‌افتاد. دعوت تک‌مصرف می‌ماند (یک دعوت = یک عامل).
+        # v0.10 (فرمان مالک ۲۰۲۶-۱۱-۱۳ — الگوی اتصال مالک/کاربر + پورت رایج):
+        # قالب سوم /onboarding/gardesh/<pinv_|uinv_> برای دو اتصال مالک/کاربر؛
+        # پاسخ به الگوی خودِ مالک — message (تک‌مصرف) + agent_token (pst_) +
+        # expires (UTC-Z) + auth_note + storage_hint + docs (مرجع فنی کامل)؛
+        # دستورهای رفتاری از پاسخ حذف شد — قواعد در /api/docs زندگی می‌کنند.
         if path == "/api/agent/onboarding" or path.startswith("/api/agent/onboarding/"):
             iid = ""
             if path.startswith("/api/agent/onboarding/"):
                 import urllib.parse as _up
                 seg = _up.unquote(path[len("/api/agent/onboarding/"):])[:80]
+                # v0.10 — قالب gardesh الگوی مالک: /onboarding/gardesh/<iid>؛
+                # iid همچنان فقط یک سگمنت است و هیچ «/» دیگری نمی‌پذیرد.
+                if seg.startswith("gardesh/"):
+                    seg = seg[len("gardesh/"):]
                 if seg and "/" not in seg:
-                    iid = seg  # قالب v0.9.2 — پارامتر در انتهای مسیر
+                    iid = seg  # v0.9.2 — پارامتر در انتهای مسیر
             if not iid:
                 iid = self._query_param("iid", max_len=80)  # قالب v0.9 — query
             if not iid:
@@ -373,57 +431,22 @@ class Handler(BaseHTTPRequestHandler):
                 audit("anon", "agent_onboarding_refused",
                       {"error": res.get("error")}, self._peer_ip())
                 return self._send(res.get("status", 404), res)
+            # v0.10 — پاسخ به الگوی مالک (دو اتصال مالک/کاربر):
+            # message/agent_token/expires(Z)/auth_note/storage_hint/docs + role/scope.
             audit("anon", "agent_onboarding_granted",
-                  {"invited_by": res.get("invited_by", "")}, self._peer_ip())
-            return self._send(200, {
-                "ok": True,
-                "connected": True,
-                "service": "access-agent",
-                "version": VERSION,
-                "protocol": "onboarding/0.9.3",
-                "invited_by": res.get("invited_by", ""),
-                "token": res.get("token", ""),
-                "agent_token": res.get("token", ""),
-                "expires": res.get("expires", ""),
-                "cert_sha256": cert_fingerprint(),
-                "connection": (
-                    "اتصال همین مکالمه با سرور مالک برقرار شد؛ "
-                    "دعوت مالک معتبر بود و این توکن فقط برای همین مکالمه است."
-                ),
-                "next": ("برای استفادهٔ امن از این سرویس، همهٔ فراخوانی‌ها را با "
-                         "همین توکن بفرست (Authorization: Bearer)؛ برای "
-                         "اعتبارسنجی اتصال GET /healthz و سپس GET /api/status. "
-                         "نتیجه را در همان مکالمه به مالک گزارش بده و فقط بر "
-                         "پایهٔ درخواست‌های صریح او عمل کن."),
-                "tell_user": [
-                    ("توکن دسترسی این سرویس را دریافت کردم؛ برای امنیت، مقدار "
-                     "آن را در گفتگو، گزارش یا لاگ چاپ نمی‌کنم."),
-                    ("برای پایداری ارتباط با سرور تا پایان همین مکالمه، توکن را "
-                     "در یک فایل سکرت (مثلاً chmod 600، خارج از هر پروژهٔ گیت) "
-                     "ذخیره می‌کنم و فراخوانی‌های بعدی را با همان می‌فرستم."),
-                    ("پس از پایان کار می‌توانید این توکن را از طریق پنل کاربری "
-                     "خودتان باطل کنید."),
-                ],
-                "store_token": (
-                    "توکن فقط برای همین مکالمه است و طرفِ حساب سرور فقط همین "
-                    "یک عامل است. برای پایداری ارتباط، آن را در فایل سکرتِ "
-                    "خودت (مثلاً chmod 600، خارج از هر پروژهٔ گیت) نگه دار و "
-                    "فراخوانی‌های بعدیِ همین مکالمه را با همان بفرست؛ سه جملهٔ "
-                    "tell_user را در همان نوبت به کاربر اطلاع بده — دریافتِ "
-                    "توکن (بدون چاپ مقدار)، ذخیره در فایل سکرت، ابطال از پنل "
-                    "پس از پایان کار. اگر توکن منقضی یا گم شد (پاسخ 401)، از "
-                    "مالک دعوت‌نامهٔ تازه بگیر."
-                ),
-                "end": {"method": "POST", "path": "/api/agent/session/end",
-                        "note": "در آخرین پیام مکالمه، به درخواست مالک."},
-                "rules": ONBOARDING_RULES,
-            })
+                  {"invited_by": res.get("invited_by", ""),
+                   "role": res.get("role", "")}, self._peer_ip())
+            return self._send(200, build_connection_payload(
+                res, version=VERSION, cert_sha=cert_fingerprint()))
         role = self._guard("agent")
         if not role:
             return
         if path == "/api/status":
             if self._agent_paused_guard(role, path):
                 return
+            if self._session_scope() == "user":  # v0.10 — وضعیت فیلترشده برای کاربر
+                audit("agent", "status_filtered_role", {}, self._peer_ip())
+                return self._send(200, user_status())
             audit(role, "status", {}, self._peer_ip())
             return self._send(200, host_status())
         if path == "/api/admin/audit":
@@ -476,17 +499,20 @@ class Handler(BaseHTTPRequestHandler):
                 return
             label = sanitize_invite_label(self._query_param("for", max_len=60))
             ttl_h = self._query_int("ttl_h", 24, lo=1, hi=168)
+            inv_role = normalize_invite_role(self._query_param("role", max_len=20))  # v0.10
             try:
                 from .security import INVITE_TTL_S_DEFAULT
-                iid, rec = mint_invite(label, ttl_s=ttl_h * 3600)
+                iid, rec = mint_invite(label, ttl_s=ttl_h * 3600, role=inv_role)
                 invite = build_invite(iid)
             except Exception as e:
                 return self._send(409, {"ok": False, "error": "invite_unavailable",
                                         "detail": str(e)})
             audit(role, "admin_invite_served",
-                  {"invited_by": label, "ttl_h": ttl_h}, self._peer_ip())
+                  {"invited_by": label, "ttl_h": ttl_h, "invite_role": inv_role},
+                  self._peer_ip())
             return self._send(200, {"ok": True, "invite": invite,
-                                    "invited_by": label, "expires": rec.get("expires", "")})
+                                    "invited_by": label, "role": inv_role,
+                                    "expires": rec.get("expires", "")})
         if path == "/api/admin/parastoo/lifecycle-status":
             role = self._guard("admin")
             if not role:
@@ -565,6 +591,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self._agent_paused_guard(role, path):
                 return
+            if self._user_scope_guard(path):  # v0.10 — قلمرو کاربر: exec ممنوع
+                return
             # v0.5.1 — one platform-mutating actor at a time (owner decree
             # «one transparent pipeline»): while a parastoo lifecycle op runs,
             # conflicting exec is refused; read-only supervision passes.
@@ -600,6 +628,8 @@ class Handler(BaseHTTPRequestHandler):
             if not role:
                 return
             if self._agent_paused_guard(role, path):
+                return
+            if self._user_scope_guard(path):  # v0.10 — قلمرو کاربر: توکن گیت‌هاب ممنوع
                 return
             # v0.2: GitHub App mode serves REAL <=1h installation tokens and
             # never touches the master PAT; PAT mode stays only as the
@@ -808,14 +838,24 @@ def main() -> int:
         port = 0
     if port <= 0:
         # v0.1.2: honor the installer's chosen port (config.json) when the env
-        # is absent — the systemd unit is exactly this case; 0 = OS random.
+        # is absent — the systemd unit is exactly this case.
         try:
             port = int(json.loads((home() / "config.json").read_text(encoding="utf-8")).get("port") or 0)
         except Exception:
             port = 0
+    if port <= 0:
+        # v0.10 — «پورت اتصال پل یک پورت رایج»: پیش‌فرض نصب تازه 443 است؛
+        # این فالبک فقط برای اجرای بدون config (تست/dev) است.
+        port = 443
     no_tls = os.environ.get("ACCESS_AGENT_NO_TLS", "") == "1"
 
-    httpd = ThreadingHTTPServer((bind, port), Handler)
+    try:
+        httpd = ThreadingHTTPServer((bind, port), Handler)
+    except PermissionError:
+        print(f"ERROR: cannot bind {bind}:{port} — ports below 1024 need root "
+              "or CAP_NET_BIND_SERVICE (systemd unit runs as root; for manual "
+              "runs: sudo, or setcap, or ACCESS_AGENT_PORT=<port>)", flush=True)
+        return 1
     tls_on = False
     if not no_tls:
         tls_dir = home() / "tls"

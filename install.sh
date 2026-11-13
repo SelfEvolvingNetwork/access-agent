@@ -133,6 +133,24 @@ for _ in range(50):
 PY
 }
 
+# v0.10 — «پورت اتصال پل یک پورت رایج» (فرمان مالک ۲۰۲۶-۱۱-۱۳): در نصب تازه
+# پیش‌فرض 443 است (استاندارد HTTPS؛ بدون هیچ پورت غیرعادی در URL)؛ فقط اگر
+# 443 اشغال بود به پورت آزاد تصادفی برمی‌گردیم. ACCESS_AGENT_PORT همیشه غالب است.
+default_port() {
+  if "$PYBIN" - <<'PY'
+import socket
+s = socket.socket()
+try:
+    s.bind(("0.0.0.0", 443)); s.close(); raise SystemExit(0)
+except OSError:
+    raise SystemExit(1)
+PY
+  then echo 443; else
+    warn "port 443 is busy — falling back to a random free port (override: ACCESS_AGENT_PORT)"
+    pick_free_port
+  fi
+}
+
 # ---------- 1) fresh install vs upgrade ----------
 FRESH=1
 [ -f "$ETC/tokens.json" ] && FRESH=0
@@ -146,10 +164,14 @@ mkdir -p "$ETC" "$OPT"
 chmod 700 "$ETC"
 
 if [ "$FRESH" = "1" ]; then
-  PORT="${ACCESS_AGENT_PORT:-$(pick_free_port)}"
+  PORT="${ACCESS_AGENT_PORT:-$(default_port)}"
   case "$PORT" in ''|*[!0-9]*) die "ACCESS_AGENT_PORT must be numeric";; esac
   # v0.8.3: an explicit operator override beats every probe (exotic hosts).
   IP="${ACCESS_AGENT_IP:-$(detect_ip)}"
+  # v0.10 — دامنهٔ عمومی (اختیاری؛ الگوی دعوت کاربر با دامنه): اگر مالک
+  # پنل/دامنه را استقرار داده باشد، ACCESS_AGENT_HOST آن را ثبت می‌کند؛
+  # خالی می‌ماند تا دعوت‌ها با IP ساخته شوند (bootstrap مالک روی IP خام).
+  HOST="${ACCESS_AGENT_HOST:-}"
   # v0.2.1: a provisioning client (e.g. Parastoo Mobile) may generate the tokens
   # on-device and pass them via env — such tokens are NEVER printed back.
   ADMIN_TOKEN="${ACCESS_AGENT_ADMIN_TOKEN:-}"
@@ -186,6 +208,18 @@ if [ "$FRESH" = "1" ]; then
 else
   PORT="$("$PYBIN" -c "import json;print(json.load(open('$ETC/config.json'))['port'])" 2>/dev/null || echo "")"
   if [ -z "$PORT" ]; then warn "config.json missing — cannot resolve port"; exit 1; fi
+  # v0.10 — مهاجرت عمدی پورت (فرمان مالک: پورت رایج): self-update پورت را
+  # هویت می‌داند و تغییر ناخواسته را rollback می‌کند؛ پس تغییر عمدی فقط همین‌جاست —
+  # دستور مهاجرت: sudo ACCESS_AGENT_PORT=443 bash install.sh
+  if [ -n "${ACCESS_AGENT_PORT:-}" ] && [ "$ACCESS_AGENT_PORT" != "$PORT" ]; then
+    case "$ACCESS_AGENT_PORT" in ''|*[!0-9]*) die "ACCESS_AGENT_PORT must be numeric";; esac
+    warn "DELIBERATE port migration: $PORT -> $ACCESS_AGENT_PORT (operator request)"
+    warn "open the new port in the firewall and close the old one afterwards."
+    PORT="$ACCESS_AGENT_PORT"
+  fi
+  # v0.10 — دامنه با پیوستگی: env صریح غالب؛ وگرنه مقدار ثبت‌شده می‌ماند.
+  OLD_HOST="$("$PYBIN" -c "import json;print(json.load(open('$ETC/config.json')).get('host',''))" 2>/dev/null || true)"
+  HOST="${ACCESS_AGENT_HOST:-$OLD_HOST}"
   # v0.8.3 — IP CONTINUITY (the field bug behind the owner's warning
   # «آی‌پی لوکال به‌جای آی‌پی اصلی سرور»): the recorded address is SERVER
   # IDENTITY, not version (mirror of the §۲.۱ cert rule). The old code
@@ -313,11 +347,13 @@ fi
 
 # record config (never contains secrets)
 COMMIT="${ACCESS_AGENT_DEPLOYED_COMMIT:-}"
-"$PYBIN" - "$ETC" "$PORT" "$IP" "$VERSION" "$COMMIT" <<'PY'
+"$PYBIN" - "$ETC" "$PORT" "$IP" "$VERSION" "$COMMIT" "${HOST:-}" <<'PY'
 import json, os, sys, time
-etc, port, ip, ver, commit = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+etc, port, ip, ver, commit, host = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
 cfg = {"port": int(port), "ip": ip, "version": ver, "commit": commit,
        "installed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+if host:  # v0.10 — دامنهٔ عمومی اختیاری؛ خالی = دعوت‌ها با IP ساخته می‌شوند
+    cfg["host"] = host
 with open(os.path.join(etc, "config.json"), "w", encoding="utf-8") as f:
     json.dump(cfg, f, indent=2)
 PY
@@ -408,7 +444,12 @@ fi
 # ---------- 5) report ----------
 CERT_SHA="$(openssl x509 -in "$ETC/tls/cert.pem" -noout -fingerprint -sha256 2>/dev/null \
   | sed 's/^.*Fingerprint=//' | tr -d ':' || true)"
-URL="https://${IP}:${PORT}"
+# v0.10 — پورت 443 پیش‌فرض HTTPS است؛ در نشانی چاپی نمی‌آید
+if [ "$PORT" = "443" ]; then
+  URL="https://${IP}"
+else
+  URL="https://${IP}:${PORT}"
+fi
 
 ORG_REPO_URL="https://raw.githubusercontent.com/SelfEvolvingNetwork/access-agent/main"
 REPORT="$ETC/install-report.txt"
@@ -441,8 +482,10 @@ REPORT="$ETC/install-report.txt"
   echo "COMMIT:          ${COMMIT:-unknown}"
   echo "SECRETS_DIR:     $ETC/secrets (chmod 600)"
   echo "AUDIT_LOG:       $ETC/audit/audit.jsonl (append-only)"
-  echo "OWNER CLI:       access-agent status | url | invite | approve <code> | handoff | rotate-agent-token | revoke-agent-token | revoke-agent-sessions | set-github-token <token> | set-github-app <id> <pem> | test-github-app"
-  echo "INVITE:          sudo access-agent invite   # URL + cert hash only — the server makes the 5-digit code; confirm it with:  sudo access-agent approve <code>"
+  echo "OWNER CLI:       access-agent status | url | invite [owner|user] [label] [ttl_h] | handoff | rotate-agent-token | revoke-agent-token | revoke-agent-sessions | set-github-token <token> | set-github-app <id> <pem> | test-github-app"
+  echo "INVITE:          sudo access-agent invite owner   # دعوت مالک (pinv_ — قلمرو کامل، توکن pst_ ۳۰ روز)"
+  echo "                  sudo access-agent invite user <name>  # دعوت کاربر (uinv_ — قلمرو محدود، توکن pst_ ۲۴ ساعت)"
+  echo "PORT MIGRATION:   sudo ACCESS_AGENT_PORT=443 bash install.sh   # مهاجرت عمدی به پورت رایج (فرمان مالک v0.10)"
   echo "SELF-UPDATE:     timer access-agent-update.timer (~10min) — on/off/run/status:  sudo access-agent autoupdate ..."
   echo "SERVICE:         systemctl status $SERVICE --no-pager"
   echo "UNINSTALL:       curl -fsSL $ORG_REPO_URL/uninstall.sh | sudo bash"
