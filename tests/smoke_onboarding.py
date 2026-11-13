@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""تست دودی v0.9.1 — اتصال مستقیم با دعوت‌نامه + هدایت کوتاه پس از فراخوانی.
+"""تست دودی v0.9.2 — اتصال مستقیم با دعوت‌نامه + قالب پارامتر-در-انتها + توکن نزد عامل.
 
 جریان کامل، از نگاه هر دو طرف:
   مالک:  GET /api/admin/invite?for=<کاربر> ← دعوت‌نامهٔ یک‌خطی:
-         «لطفا این لینک را دنبال کنید: https://…/api/agent/onboarding?iid=inv_…»
-  عامل:  GET /api/agent/onboarding?iid=<iid> ← مستقیماً توکن موقت aagx_ +
-         انقضا + راهنمای کوتاه؛ نه رمز، نه claim، نه poll
+         «لطفا این لینک را دنبال کنید: https://…/api/agent/onboarding/inv_…»
+  عامل:  GET /api/agent/onboarding/inv_<iid> (یا قالب قدیمی ?iid=…) ← مستقیماً
+         توکن موقت aagx_ + انقضا + راهنمای کوتاه؛ نه رمز، نه claim، نه poll
          → GET /api/status → POST /api/agent/session/end در پایان مکالمه
 
-v0.9.1 (فرمان مالک — چت دوم ۲۰۲۶-۱۱-۱۳): عامل در چت دیگر هدف را نگرفت (iid
-در ترانزیت افتاد). حالا: سند بدون iid هدف + راه اتصال + hint «کل URL را کامل
-بفرست» را می‌دهد؛ پاسخ موفق با connected:true و خط «اتصال برقرار شد» شروع
-می‌شود؛ خطای iid فارسی یک‌خطی است. همه همچنان مختصر — زیاده‌گویی ممنوع.
+v0.9.2 (فرمان مالک — چت‌های سوم/چهارم ۲۰۲۶-۱۱-۱۳): (۱) iid در انتهای مسیر
+می‌نشیند — چون رشتهٔ query گاهی در ترانزیت عامل می‌افتاد؛ (۲) دعوت تک‌مصرف
+می‌ماند (یک دعوت = یک عامل؛ طرفِ حساب سرور فقط همان یک عامل) و پایداری به
+خود عامل سپرده می‌شود — پاسخ موفق، عامل را هدایت می‌کند توکن را در فایل
+سکرتِ خودش (chmod 600، خارج از git) نگه دارد؛ گم‌شدن توکن → 401 → دعوت
+تازه از مالک (فرمان مالک: سختگیری افراطی گاه باگ بدتری می‌سازند).
 
 قرمزها: iid غلط/مصرف‌شده/منقضی، یک دعوت = یک عامل، نرخ‌سنجی خطای iid،
 مسیرهای بازنشسته (claim/claim-poll/onboard/agent-approve → 404)، فقط هش روی
@@ -100,7 +102,7 @@ AGENT = "aa_" + os.urandom(24).hex()   # توکن بلندمدت برای تست
     "agent_sha": hashlib.sha256(AGENT.encode()).hexdigest(),
 }), encoding="utf-8")
 (Path(TMP) / "config.json").write_text(json.dumps({
-    "ip": "203.0.113.7", "port": 9999, "version": "0.9.1",
+    "ip": "203.0.113.7", "port": 9999, "version": "0.9.2",
 }), encoding="utf-8")
 (Path(TMP) / "tls").mkdir(exist_ok=True)
 subprocess.run(
@@ -144,7 +146,7 @@ for _ in range(50):
 def get_invite(label: str = "") -> str:
     q = "?for=" + urllib.parse.quote(label) if label else ""
     c, b = req("GET", f"/api/admin/invite{q}", token=ADMIN)
-    m = re.search(r"\?iid=(inv_[0-9a-f]{24})", b.get("invite", ""))
+    m = re.search(r"/api/agent/onboarding/(inv_[0-9a-f]{24})", b.get("invite", ""))
     return m.group(1) if m else ""
 
 
@@ -154,10 +156,10 @@ def main() -> int:
         print(server_log.read())
         return 1
 
-    # ---------- سند آشناسازی بدون iid: کوتاه ولی هدف‌دار (v0.9.1) ----------
+    # ---------- سند آشناسازی بدون iid: کوتاه ولی هدف‌دار (v0.9.2) ----------
     c, b = req("GET", "/api/agent/onboarding")
-    ch("onboarding بدون iid → 200 و پروتکل 0.9.1",
-       c == 200 and b.get("protocol") == "onboarding/0.9.1")
+    ch("onboarding بدون iid → 200 و پروتکل 0.9.2",
+       c == 200 and b.get("protocol") == "onboarding/0.9.2")
     ch("onboarding بدون iid → invite_required=True",
        b.get("invite_required") is True)
     ch("onboarding بدون iid → connected=False",
@@ -170,8 +172,9 @@ def main() -> int:
     ch("onboarding: هدف را می‌گوید (پل عامل به سرور مالک)",
        "عامل" in str(b.get("what_this_is", ""))
        and "مکالمه" in str(b.get("what_this_is", "")))
-    ch("onboarding: راه اتصال با ?iid را می‌گوید",
-       "?iid=" in str(b.get("how_to_connect", "")))
+    ch("onboarding: راه اتصال هر دو قالب را می‌گوید",
+       "/api/agent/onboarding/inv_" in str(b.get("how_to_connect", ""))
+       and "?iid=" in str(b.get("how_to_connect", "")))
     ch("onboarding: hint «بدون iid رسید، کل URL را بفرست» دارد",
        "بدون iid" in str(b.get("note", ""))
        and "بدون تغییر" in str(b.get("note", "")))
@@ -179,13 +182,21 @@ def main() -> int:
        len(b.get("rules", [])) == 2
        and any("تخریبی" in r for r in b.get("rules", [])))
     doc_s = json.dumps(b, ensure_ascii=False)
-    ch("onboarding: مسیر iid را می‌گوید", "iid=" in doc_s)
+    ch("onboarding: مسیر iid را می‌گوید", "iid=" in doc_s or "inv_" in doc_s)
     c, b = req("POST", "/api/agent/onboarding", body={})
     ch("POST روی onboarding → 405", c == 405)
+    c, b = req("POST", "/api/agent/onboarding/inv_deadbeef" + "0" * 16, body={})
+    ch("POST روی قالب مسیری دعوت → 405 (فقط GET)", c == 405)
+    c, b = req("GET", "/api/agent/onboarding/")
+    ch("GET /api/agent/onboarding/ (بدون iid) → سند کوتاه 200",
+       c == 200 and b.get("connected") is False)
 
     # ---------- iid غلط → 404 (با توضیح فارسی یک‌خطی) ----------
     c, b = req("GET", "/api/agent/onboarding?iid=inv_deadbeef" + "0" * 16)
-    ch("onboarding با iid غلط → 404 unknown_invite",
+    ch("onboarding با iid غلط (قالب query) → 404 unknown_invite",
+       c == 404 and b.get("error") == "unknown_invite")
+    c, b = req("GET", "/api/agent/onboarding/inv_deadbeef" + "0" * 16)
+    ch("onboarding با iid غلط (قالب مسیری) → 404 unknown_invite",
        c == 404 and b.get("error") == "unknown_invite")
     ch("خطای iid: توضیح فارسی یک‌خطی (دعوت تازه از مالک)",
        "دعوت" in str(b.get("detail", ""))
@@ -210,10 +221,10 @@ def main() -> int:
     inv = str(b.get("invite", ""))
     ch("invite: متن دقیقاً یک خط است",
        inv.count("\n") == 0 and inv.startswith("لطفا این لینک را دنبال کنید: "))
-    ch("invite: URL کامل با iid دارد",
-       "https://203.0.113.7:9999/api/agent/onboarding?iid=inv_" in inv)
-    m = re.search(r"\?iid=(inv_[0-9a-f]{24})$", inv)
-    ch("invite: فقط iid در URL (بدون هیچ چیز دیگر)", bool(m))
+    ch("invite: URL کامل با iid در انتهای مسیر دارد (v0.9.2)",
+       "https://203.0.113.7:9999/api/agent/onboarding/inv_" in inv)
+    m = re.search(r"/api/agent/onboarding/(inv_[0-9a-f]{24})$", inv)
+    ch("invite: فقط iid در انتهای URL (بدون هیچ چیز دیگر)", bool(m))
     IID = m.group(1) if m else ""
     ch("invite: هیچ کد/توکن/هش اضافه ندارد",
        "ob_" not in inv and "adm_" not in inv and "aclsk_" not in inv
@@ -221,9 +232,9 @@ def main() -> int:
     ch("invite: JSON برچسب کاربر و انقضا را جدا می‌دهد",
        b.get("invited_by") == "رضا" and bool(b.get("expires")))
 
-    # ---------- عامل: GET با iid → توکن مستقیم + هدایت کوتاه (v0.9.1) ----------
+    # ---------- عامل: GET با iid → توکن مستقیم + هدایت کوتاه (v0.9.2) ----------
     c, b = req("GET", f"/api/agent/onboarding?iid={IID}")
-    ch("onboarding با iid معتبر → 200", c == 200 and b.get("ok") is True)
+    ch("onboarding با iid معتبر (قالب query) → 200", c == 200 and b.get("ok") is True)
     ch("پاسخ با connected=True شروع می‌شود", b.get("connected") is True)
     TOK = str(b.get("token", ""))
     ch("توکن مستقیم aagx_ در همان پاسخ", TOK.startswith("aagx_"))
@@ -231,7 +242,7 @@ def main() -> int:
     ch("پاسخ برچسب کاربر دعوت را می‌دهد", b.get("invited_by") == "رضا")
     ch("پاسخ انقضا دارد", bool(b.get("expires")))
     ch("پاسخ هش گواهی عمومی دارد", bool(b.get("cert_sha256")))
-    ch("پاسخ پروتکل 0.9.1 دارد", b.get("protocol") == "onboarding/0.9.1")
+    ch("پاسخ پروتکل 0.9.2 دارد", b.get("protocol") == "onboarding/0.9.2")
     ch("پاسخ خط هدف دارد: «اتصال همین مکالمه برقرار شد»",
        "اتصال" in str(b.get("connection", ""))
        and "همین مکالمه" in str(b.get("connection", ""))
@@ -239,6 +250,10 @@ def main() -> int:
     ch("پاسخ گام بعدی و پایان را می‌گوید",
        "/healthz" in str(b.get("next", "")) and "مالک" in str(b.get("next", "")) and
        "/api/agent/session/end" in json.dumps(b.get("end", ""), ensure_ascii=False))
+    ch("پاسخ راهنمای نگه‌داری توکن دارد (فایل سکرت + 401 → دعوت تازه)",
+       "فایل سکرت" in str(b.get("store_token", ""))
+       and "401" in str(b.get("store_token", ""))
+       and "دعوت‌نامهٔ تازه" in str(b.get("store_token", "")))
     ch("پاسخ قواعد کوتاه دارد", len(b.get("rules", [])) == 2)
     ch("پاسخ هیچ pairing/claim/code ندارد",
        "pairing" not in b and "code" not in b and "claim_id" not in b)
@@ -252,10 +267,18 @@ def main() -> int:
        IID not in invites_txt and IID not in sess_txt and TOK not in sess_txt
        and "aclsk_" not in sess_txt)
 
-    # ---------- یک دعوت = یک عامل ----------
-    c, b = req("GET", f"/api/agent/onboarding?iid={IID}")
-    ch("GET دوباره با همان iid → 404 (یک دعوت = یک عامل)",
+    # ---------- یک دعوت = یک عامل (فرمان مالک — چت چهارم) ----------
+    c, b = req("GET", f"/api/agent/onboarding/{IID}")
+    ch("GET دوباره با همان iid (قالب مسیری) → 404 (یک دعوت = یک عامل)",
        c == 404 and b.get("error") == "unknown_invite")
+    ch("خطای دعوت مصرف‌شده: متن شامل «مصرف‌شده» است",
+       "مصرف‌شده" in str(b.get("detail", "")))
+    data = json.loads((Path(TMP) / "invites.json").read_text(encoding="utf-8"))
+    used_recs = [i for i in data["invites"] if i.get("used")]
+    ch("دیسک: رکورد مصرف با claims=1 و بدون هیچ iid خام",
+       bool(used_recs)
+       and all(int(i.get("claims", 0) or 0) == 1 for i in used_recs)
+       and IID not in json.dumps(data))
 
     # ---------- رکورد نشست: origin=invite + invited_by ----------
     ch("نشست origin=invite دارد", '"invite"' in sess_txt)
@@ -292,7 +315,7 @@ def main() -> int:
     IID3 = get_invite("t")
     data = json.loads((Path(TMP) / "invites.json").read_text(encoding="utf-8"))
     for inv_rec in data["invites"]:
-        if inv_rec.get("invited_by") == "t" and not inv_rec.get("used"):
+        if inv_rec.get("invited_by") == "t":
             inv_rec["expires_ts"] = time.time() - 1
     (Path(TMP) / "invites.json").write_text(json.dumps(data), encoding="utf-8")
     c, b = req("GET", f"/api/agent/onboarding?iid={IID3}")
@@ -376,6 +399,9 @@ def main() -> int:
             r_ok = S.claim_invite_session(iidX, ip="10.1.1.1")
             ch("نرخ‌سنجی: دعوت معتبر همچنان جواب می‌دهد (فقط خطا شمرده می‌شود)",
                r_ok.get("ok") is True and r_ok.get("token", "").startswith("aagx_"))
+            r_again = S.claim_invite_session(iidX, ip="10.1.1.9")
+            ch("تک‌مصرف: فراخوانی دوبارهٔ همان دعوت در لایهٔ unit → 404",
+               r_again.get("ok") is False and r_again.get("status") == 404)
         finally:
             S.ONBOARD_FAIL_WINDOW_S, S.ONBOARD_FAIL_MAX = old_w, old_m
         # جاروی دیکشنری نرخ: با آدرس‌های کهنهٔ بسیار، حافظه بی‌کران نگردد
@@ -398,9 +424,10 @@ def main() -> int:
     ch("onboarding_doc: قواعد دوردیفه", len(doc["rules"]) == 2)
     ch("onboarding_doc: connected=False و hint بدون-iid",
        doc.get("connected") is False and "بدون iid" in str(doc.get("note", "")))
-    ch("build_invite: یک خط با قالب مالک",
+    ch("build_invite: یک خط با قالب مالک و پارامتر در انتهای مسیر",
        build_invite("inv_" + "a" * 24).count("\n") == 0
-       and build_invite("inv_" + "a" * 24).startswith("لطفا این لینک را دنبال کنید: https://"))
+       and build_invite("inv_" + "a" * 24).startswith("لطفا این لینک را دنبال کنید: https://")
+       and build_invite("inv_" + "a" * 24).endswith("/api/agent/onboarding/inv_" + "a" * 24))
 
     teardown()
     print(f"\n# جمع‌بندی: {GREEN}{n_pass} سبز{NC}، {RED}{n_fail} قرمز{NC}")

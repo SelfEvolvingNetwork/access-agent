@@ -8,7 +8,17 @@ Endpoints (v0.5):
                                   is the credential: the server DIRECTLY
                                   issues the temporary agent session token
                                   (aagx_) in the same response — no pairing
-                                  code, no polling (owner decree 2026-11-13)
+                                  code, no polling (owner decree 2026-11-13).
+                                  v0.9.2: the invite id may ALSO ride the
+                                  path — GET /api/agent/onboarding/inv_… —
+                                  (owner decree, chat 3: the ?query string
+                                  sometimes drops in agent transit); both
+                                  forms are public and equivalent. Invites
+                                  stay one-time (owner decree, chat 4: the
+                                  server's counterparty must stay exactly
+                                  one agent); the response instructs the
+                                  agent to keep the token in its own local
+                                  secret file for the conversation.
   GET  /api/admin/invite          admin one-line invite (v0.9): mints a
                                   user-bound one-time invite (?for=<label>,
                                   ?ttl_h=1..168 default 24) whose URL carries
@@ -169,7 +179,8 @@ def host_status() -> dict:
         "ok": True,
         "service": "access-agent",
         "version": VERSION,
-        "uptime_s": uptime_s,
+        "uptime_s": uptime_s,          # v0.9.2: نام قدیمی برای سازگاری — زمانِ میزبان
+        "host_uptime_s": uptime_s,    # v0.9.2: برچسب صریح (healthz زمانِ فرآیند است)
         "hostname": socket.gethostname(),
         "kernel": os.uname().release,
         "python": ".".join(map(str, sys.version_info[:3])),
@@ -320,8 +331,12 @@ class Handler(BaseHTTPRequestHandler):
             # نیست). فرمان مالک ۲۰۲۶-۱۱-۱۲ («الگوی مخرب آپدیت»): کلاینت باید بتواند
             # پیوستگی هویت سرور را بی‌هزینه بپرسد — «آیا اثرانگشت عوض شده؟»
             # جوابش از خود سرور، بدون SSH و بدون توکن.
+            # v0.9.2 — process_uptime_s صریح (uptime_s اینجا زمانِ فرآیند است؛
+            # در /api/status زمانِ میزبان است — درس میدان: دو سنجهٔ هم‌نام
+            # گیج‌کننده بود؛ هر دو با برچسب صریح + نام قدیمی برای سازگاری).
             return self._send(200, {"ok": True, "service": "access-agent", "version": VERSION,
                                     "uptime_s": int(time.monotonic() - STARTED_AT),
+                                    "process_uptime_s": int(time.monotonic() - STARTED_AT),
                                     "cert_sha256": cert_fingerprint()})
         if path == "/":
             return self._send(200, {"ok": True, "service": "access-agent", "version": VERSION,
@@ -332,8 +347,19 @@ class Handler(BaseHTTPRequestHandler):
         # فرمان مالک (چت دوم ۲۰۲۶-۱۱-۱۳): توضیحِ بیشتر ولی مختصر، پس از فراخوانی —
         # پاسخ با «connected: true» و یک خط هدف شروع می‌شود تا عامل بداند چه
         # رخ داده و بعد چه کند (اعتمادسازی از خود سرور، نه از متن دعوت).
-        if path == "/api/agent/onboarding":
-            iid = self._query_param("iid", max_len=80)
+        # v0.9.2 (فرمان مالک — چت‌های سوم/چهارم): قالب دوم — iid در انتهای مسیر
+        # (/onboarding/inv_…)؛ چون رشتهٔ query گاهی در ترانزیت ابزار عامل
+        # می‌افتاد. هر دو قالب عمومی و هم‌ارزند؛ دعوت تک‌مصرف می‌ماند و پاسخ
+        # عامل را هدایت می‌کند توکن را در فایل سکرتِ خودش نگه دارد.
+        if path == "/api/agent/onboarding" or path.startswith("/api/agent/onboarding/"):
+            iid = ""
+            if path.startswith("/api/agent/onboarding/"):
+                import urllib.parse as _up
+                seg = _up.unquote(path[len("/api/agent/onboarding/"):])[:80]
+                if seg and "/" not in seg:
+                    iid = seg  # قالب v0.9.2 — پارامتر در انتهای مسیر
+            if not iid:
+                iid = self._query_param("iid", max_len=80)  # قالب v0.9 — query
             if not iid:
                 audit("anon", "agent_onboarding_read", {}, self._peer_ip())
                 return self._send(200, onboarding_doc())
@@ -349,7 +375,7 @@ class Handler(BaseHTTPRequestHandler):
                 "connected": True,
                 "service": "access-agent",
                 "version": VERSION,
-                "protocol": "onboarding/0.9.1",
+                "protocol": "onboarding/0.9.2",
                 "invited_by": res.get("invited_by", ""),
                 "token": res.get("token", ""),
                 "agent_token": res.get("token", ""),
@@ -362,6 +388,13 @@ class Handler(BaseHTTPRequestHandler):
                 "next": ("GET /healthz، سپس GET /api/status با همین توکن "
                          "(Authorization: Bearer)؛ بعد به مالک گزارش بده "
                          "و منتظر فرمانش بمان."),
+                "store_token": (
+                    "این توکن را در یک فایل سکرتِ خودت (مثلاً chmod 600، "
+                    "خارج از هر پروژهٔ گیت، فقط برای همین مکالمه) نگه دار و "
+                    "فراخوانی‌های بعدیِ همین مکالمه را با همان بفرست — طرفِ "
+                    "حساب سرور فقط همین یک عامل است. اگر توکن منقضی یا گم "
+                    "شد (پاسخ 401)، از مالک دعوت‌نامهٔ تازه بگیر."
+                ),
                 "end": {"method": "POST", "path": "/api/agent/session/end",
                         "note": "در آخرین پیام مکالمه، به درخواست مالک."},
                 "rules": ONBOARDING_RULES,
@@ -472,7 +505,8 @@ class Handler(BaseHTTPRequestHandler):
     # ---- POST ----
     def do_POST(self):
         path = self.path.split("?", 1)[0]
-        if path in GET_ONLY:
+        if path in GET_ONLY or path.startswith("/api/agent/onboarding/"):
+            # v0.9.2 — قالب مسیری دعوت هم فقط GET است (سازگاری با قالب query).
             return self._send(405, {"ok": False, "error": "method_not_allowed",
                                     "detail": "use GET"})
         raw = self._read_body()
