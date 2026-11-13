@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""تست دودی v0.9.2 — اتصال مستقیم با دعوت‌نامه + قالب پارامتر-در-انتها + توکن نزد عامل.
+"""تست دودی v0.9.3 — اتصال مستقیم با دعوت‌نامه + قالب پارامتر-در-انتها + توکن نزد عامل + شفافیت به کاربر.
 
 جریان کامل، از نگاه هر دو طرف:
   مالک:  GET /api/admin/invite?for=<کاربر> ← دعوت‌نامهٔ یک‌خطی:
@@ -15,6 +15,12 @@ v0.9.2 (فرمان مالک — چت‌های سوم/چهارم ۲۰۲۶-۱۱-۱
 خود عامل سپرده می‌شود — پاسخ موفق، عامل را هدایت می‌کند توکن را در فایل
 سکرتِ خودش (chmod 600، خارج از git) نگه دارد؛ گم‌شدن توکن → 401 → دعوت
 تازه از مالک (فرمان مالک: سختگیری افراطی گاه باگ بدتری می‌سازند).
+
+v0.9.3 (فرمان مالک — چت پنجم ۲۰۲۶-۱۱-۱۳): شفافیت توکن به کاربر — پاسخ
+اتصال فیلد tell_user (سه جملهٔ اول‌شخص: دریافت توکن بدون چاپ مقدار، ذخیره
+در فایل سکرت برای پایداری ارتباط، ابطال از پنل پس از پایان کار) دارد و
+store_token اطلاع‌رسانی را در همان نوبت الزام می‌کند؛ قاعدهٔ دوم هم‌جهت شد
+و next دقیق شد (گزارش در همان مکالمه، عمل فقط با درخواست صریح مالک).
 
 قرمزها: iid غلط/مصرف‌شده/منقضی، یک دعوت = یک عامل، نرخ‌سنجی خطای iid،
 مسیرهای بازنشسته (claim/claim-poll/onboard/agent-approve → 404)، فقط هش روی
@@ -102,7 +108,7 @@ AGENT = "aa_" + os.urandom(24).hex()   # توکن بلندمدت برای تست
     "agent_sha": hashlib.sha256(AGENT.encode()).hexdigest(),
 }), encoding="utf-8")
 (Path(TMP) / "config.json").write_text(json.dumps({
-    "ip": "203.0.113.7", "port": 9999, "version": "0.9.2",
+    "ip": "203.0.113.7", "port": 9999, "version": "0.9.3",
 }), encoding="utf-8")
 (Path(TMP) / "tls").mkdir(exist_ok=True)
 subprocess.run(
@@ -158,8 +164,8 @@ def main() -> int:
 
     # ---------- سند آشناسازی بدون iid: کوتاه ولی هدف‌دار (v0.9.2) ----------
     c, b = req("GET", "/api/agent/onboarding")
-    ch("onboarding بدون iid → 200 و پروتکل 0.9.2",
-       c == 200 and b.get("protocol") == "onboarding/0.9.2")
+    ch("onboarding بدون iid → 200 و پروتکل 0.9.3",
+       c == 200 and b.get("protocol") == "onboarding/0.9.3")
     ch("onboarding بدون iid → invite_required=True",
        b.get("invite_required") is True)
     ch("onboarding بدون iid → connected=False",
@@ -242,7 +248,7 @@ def main() -> int:
     ch("پاسخ برچسب کاربر دعوت را می‌دهد", b.get("invited_by") == "رضا")
     ch("پاسخ انقضا دارد", bool(b.get("expires")))
     ch("پاسخ هش گواهی عمومی دارد", bool(b.get("cert_sha256")))
-    ch("پاسخ پروتکل 0.9.2 دارد", b.get("protocol") == "onboarding/0.9.2")
+    ch("پاسخ پروتکل 0.9.3 دارد", b.get("protocol") == "onboarding/0.9.3")
     ch("پاسخ خط هدف دارد: «اتصال همین مکالمه برقرار شد»",
        "اتصال" in str(b.get("connection", ""))
        and "همین مکالمه" in str(b.get("connection", ""))
@@ -250,11 +256,29 @@ def main() -> int:
     ch("پاسخ گام بعدی و پایان را می‌گوید",
        "/healthz" in str(b.get("next", "")) and "مالک" in str(b.get("next", "")) and
        "/api/agent/session/end" in json.dumps(b.get("end", ""), ensure_ascii=False))
+    ch("next: عمل فقط با درخواست صریح مالک — نه «منتظر فرمانش بمان» (v0.9.3)",
+       "صریح" in str(b.get("next", ""))
+       and "منتظر فرمانش بمان" not in str(b.get("next", "")))
     ch("پاسخ راهنمای نگه‌داری توکن دارد (فایل سکرت + 401 → دعوت تازه)",
        "فایل سکرت" in str(b.get("store_token", ""))
        and "401" in str(b.get("store_token", ""))
        and "دعوت‌نامهٔ تازه" in str(b.get("store_token", "")))
+    ch("پاسخ tell_user دارد: سه اطلاع‌رسانی شفاف به کاربر (v0.9.3)",
+       isinstance(b.get("tell_user"), list) and len(b["tell_user"]) == 3
+       and any("چاپ نمی‌کنم" in s for s in b["tell_user"])
+       and any("فایل سکرت" in s for s in b["tell_user"])
+       and any("باطل کنید" in s for s in b["tell_user"]))
+    ch("tell_user: دریافت توکن + پایداری ارتباط/سکرت + ابطال از پنل کاربری",
+       any("دریافت کردم" in s for s in b["tell_user"])
+       and any("پایداری ارتباط" in s for s in b["tell_user"])
+       and any("پنل کاربری" in s for s in b["tell_user"]))
+    ch("store_token: اطلاع‌رسانی tell_user را در همان نوبت الزام می‌کند",
+       "tell_user" in str(b.get("store_token", ""))
+       and "همان نوبت" in str(b.get("store_token", "")))
     ch("پاسخ قواعد کوتاه دارد", len(b.get("rules", [])) == 2)
+    ch("قاعدهٔ دوم: چاپ ممنوع ولی اطلاع‌رسانی واجب + ابطال از پنل (v0.9.3)",
+       any("چاپ" in r and "اطلاع بده" in r for r in b.get("rules", []))
+       and any("باطل" in r for r in b.get("rules", [])))
     ch("پاسخ هیچ pairing/claim/code ندارد",
        "pairing" not in b and "code" not in b and "claim_id" not in b)
     ch("پاسخ کوتاه است (بدون سند بلند)",
