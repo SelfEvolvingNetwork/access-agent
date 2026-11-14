@@ -205,6 +205,36 @@ def main() -> int:
     ch("docs: مدل خطا و سقف‌ها دارد", "errors" in b and "limits" in b)
     ch("docs: قواعد و خطوط قرمز دارد", len(b.get("rules", [])) >= 2
        and len(b.get("red_lines", [])) >= 2)
+    # ---------- /api/docs — پاکت هم‌شکل خانواده (v0.11) ----------
+    fam = b.get("family", {})
+    ch("docs: family چهار سرویس/مخزن خانواده را می‌دهد",
+       isinstance(fam.get("services"), list)
+       and {s.get("name") for s in fam.get("services", [])} == {
+           "access-agent", "parastoo", "parastoo-workbench", "parastoo-mobile"})
+    ch("docs: family هر سرویس kind/role/repo/docs دارد",
+       all(all(k in s for k in ("name", "kind", "role", "repo", "docs"))
+           for s in fam.get("services", [])))
+    ch("docs: family رجیستر INDEX و متن بیداری ECOSYSTEM را می‌دهد",
+       "INDEX.fa.md" in str(fam.get("registry", ""))
+       and "ECOSYSTEM.fa.md" in str(fam.get("ecosystem", "")))
+    ch("docs: family نقش‌ها (ROLES) و قرارداد پاکت را می‌دهد",
+       "ROLES.fa.md" in str(fam.get("roles", ""))
+       and "FAMILY_PACKETS.fa.md" in str(fam.get("contract", "")))
+    self_svc = next((s for s in fam.get("services", [])
+                     if s.get("name") == "access-agent"), {})
+    ch("docs: family خودارجاعی — docs_url زندهٔ خود سرویس",
+       str(self_svc.get("docs_url", "")).endswith("/api/docs"))
+    ch("docs: family متن بیداری را تکرار نمی‌کند (فقط اشاره‌گر)",
+       len(str(fam.get("ecosystem", ""))) < 200)
+    cs = b.get("cold_start", {})
+    ch("docs: cold_start زنجیرهٔ خواندن عامل سرد دارد (>=۳ گام)",
+       isinstance(cs.get("steps"), list) and len(cs.get("steps", [])) >= 3)
+    ch("docs: cold_start از انتخاب نقش (ROLES) شروع می‌شود",
+       "ROLES" in str(cs.get("steps", [""])[0]))
+    ch("docs: هر نقش اتصال next_reading دارد",
+       all(isinstance(b.get("roles", {}).get(r, {}).get("next_reading"), list)
+           and b["roles"][r]["next_reading"]
+           for r in ("owner", "user", "agent")))
     c, b = req("POST", "/api/docs", body={})
     ch("POST /api/docs → 405", c == 405)
 

@@ -1,14 +1,21 @@
-"""API technical reference — access_agent.apidocs (v0.10).
+"""API technical reference — access_agent.apidocs (v0.11).
 
 GET /api/docs (عمومی) — مرجع فنی کامل سرویس برای عامل‌های هوش مصنوعی.
 الگوی مالک ۲۰۲۶-۱۱-۱۳: پاسخ اتصال فقط داده است (توکن/انقضا/لینک مستندات)؛
 کل راهنمای فنی، قلمرو نقش‌ها، قواعد و خطوط قرمز این‌جا زندگی می‌کند.
+
+v0.11 — پاکت هم‌شکل خانواده: بخش تازه family (نقشهٔ چهار سرویس/مخزن
++ رجیستر INDEX + متن بیداری ECOSYSTEM) و cold_start (زنجیرهٔ خواندن
+عامل سرد) + next_reading برای هر نقش اتصال — داده در
+access_agent.family زندگی می‌کند؛ متن کامل قرارداد:
+docs/FAMILY_PACKETS.fa.md مخزن پرستو.
 
 همه‌چیز داده است، نه دستور رفتاری — عامل‌ها مستندات را می‌خوانند و بر پایهٔ
 درخواست صریح مالک/کاربر عمل می‌کنند. هیچ مقدار راز (توکن/iid) این‌جا نیست.
 """
 from __future__ import annotations
 
+from .family import cold_start_payload, family_payload, NEXT_READING
 from .handoff import ONBOARDING_ENDPOINT, ONBOARDING_RULES, ROLE_SCOPES, docs_url
 from .security import (AGENT_SESSION_TTL_S, AGENT_SESSIONS_MAX, INVITE_TTL_S_DEFAULT,
                        INVITE_TTL_S_MAX, INVITES_MAX,
@@ -26,7 +33,7 @@ def docs_payload(version: str) -> dict:
         "version": version,
         "protocol": f"onboarding/{version}",
         "language": "fa",
-        "updated_for": "v0.10 (الگوی اتصال مالک/کاربر)",
+        "updated_for": "v0.11 (پاکت هم‌شکل خانواده)",
 
         "overview": (
             "پل دسترسی مستقل عامل هوش مصنوعی به سرور مالک — HTTPS + Bearer token. "
@@ -41,6 +48,7 @@ def docs_payload(version: str) -> dict:
                 "token_prefix": "pst_",
                 "ttl_s": OWNER_SESSION_TTL_S,
                 "scope": ROLE_SCOPES["owner"],
+                "next_reading": NEXT_READING["owner"],
                 "description": (
                     "اتصال مالک: قلمرو کامل عامل — اجرای دستور روی هاست، وضعیت کامل، "
                     "گرفتن توکن گیت‌هاب. مالک دعوت‌نامه را با CLI (access-agent invite owner) "
@@ -52,6 +60,7 @@ def docs_payload(version: str) -> dict:
                 "token_prefix": "pst_",
                 "ttl_s": USER_SESSION_TTL_S,
                 "scope": ROLE_SCOPES["user"],
+                "next_reading": NEXT_READING["user"],
                 "description": (
                     "اتصال کاربر: قلمرو محدود — /healthz و /api/status فیلترشده و "
                     "پایان نشست. اجرای دستور (POST /api/exec) و توکن گیت‌هاب "
@@ -64,6 +73,7 @@ def docs_payload(version: str) -> dict:
                 "token_prefix": "aagx_",
                 "ttl_s": AGENT_SESSION_TTL_S,
                 "scope": ROLE_SCOPES["agent"],
+                "next_reading": NEXT_READING["agent"],
                 "description": (
                     "سازگاری: دعوت‌های قدیمی (پیش از v0.10) و توکن بلندمدت aa_ — "
                     "قلمرو کامل عامل مانند owner."
@@ -197,5 +207,7 @@ def docs_payload(version: str) -> dict:
             "توکن/کد ادمین هرگز از مسیر عامل نمی‌آید و عامل آن را درخواست نمی‌کند.",
             "مقدار توکن/iid هرگز در گفتگو، گزارش یا لاگ چاپ نمی‌شود.",
         ],
+        "family": family_payload(),
+        "cold_start": cold_start_payload(),
         "docs": docs_url(),
     }
