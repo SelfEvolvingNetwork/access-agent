@@ -236,11 +236,13 @@ ONBOARDING_RULES = [
 ROLE_SCOPES = {
     "owner": [
         "GET /healthz", "GET /api/status", "GET /api/docs",
+        "GET /api/agent/audit",
         "POST /api/exec", "POST /api/github/token",
         "POST /api/agent/session/end",
     ],
     "agent": [  # سازگاری — دعوت‌های قدیمی inv_ و توکن بلندمدت aa_
         "GET /healthz", "GET /api/status", "GET /api/docs",
+        "GET /api/agent/audit",
         "POST /api/exec", "POST /api/github/token",
         "POST /api/agent/session/end",
     ],

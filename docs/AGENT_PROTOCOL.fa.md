@@ -121,13 +121,21 @@ curl -sk -H "Authorization: Bearer $ACCESS_AGENT_AGENT_TOKEN" \
 ## ۴) قرارداد `POST /api/exec`
 
 ```json
-{"cmd": "<≤۱۶۳۸۴ کاراکتر>", "timeout_s": 60, "cwd": "/opt/parastoo"}
+{"cmd": "<≤۱۶۳۸۴ کاراکتر>", "timeout_s": 60, "cwd": "/opt/parastoo", "dry_run": false}
 ```
 
 - اجرا با `bash -c` روی خودِ هاست، `stdin=/dev/null`، kill کل process-group در تایم‌اوت.
-- پاسخ: `{ok, exit_code, stdout, stderr, duration_ms, timed_out}` — هر جریان ≤ ۲۰۰هزار کاراکتر.
-- خطاها: `cmd_too_long` / `timeout_out_of_range` / `cwd_not_found` / `bad_timeout` / `busy` (429 — سقف هم‌زمانی ۲) / `lifecycle_busy` (409 از v0.5.1 — حین عملیات lifecycle پرستو، execِ متضاد با نصب/آپدیت/حذف — مثل bootstrap.sh، install.sh، docker compose — رد می‌شود؛ دستورهای خواندنی برای نظارت از راه می‌مانند و برعکس، شروع lifecycle حین اجرای execِ متضاد 409 exec_busy می‌گیرد).
+- پاسخ: `{ok, exit_code, stdout, stderr, duration_ms, timed_out, rid}` — هر جریان ≤ ۲۰۰هزار کاراکتر. `rid` (v0.12) شناسهٔ رکورد audit همین رویداد است — قابل نقل در تیکت، بدون هیچ راز.
+- خطاها: `cmd_too_long` / `timeout_out_of_range` / `cwd_not_found` / `bad_timeout` / `busy` (429 — سقف هم‌زمانی ۲؛ از v0.12 با `retry_after_s` و `info.exec_concurrent_max`) / `lifecycle_busy` (409 از v0.5.1 — حین عملیات lifecycle پرستو، execِ متضاد با نصب/آپدیت/حذف — مثل bootstrap.sh، install.sh، docker compose — رد می‌شود؛ دستورهای خواندنی برای نظارت از راه می‌مانند و برعکس، شروع lifecycle حین اجرای execِ متضاد 409 exec_busy می‌گیرد).
+- **`dry_run: true` (v0.12):** پیش‌نمایش بدون اجرا — همان اعتبارسنجی‌ها (طول/تایم‌اوت/cwd) انجام می‌شود ولی دستور روی هاست اجرا نمی‌شود؛ پاسخ `lifecycle_conflict` و در صورت تقابل، `would_reject_if_busy` با `conflict_token` را می‌دهد تا عامل پیش از اجرای واقعی بداند قاعدهٔ «یک بازیگر تغییردهنده در هر لحظه» چه می‌گوید.
 - **قاعدهٔ طلایی:** دستورهای طولانی/چندگانه را با `&&` یا اسکریپت موقتی در `/tmp` بزنید؛ خروجی بزرگ را خودتان فیلتر کنید (`tail`, `grep`) چون سقف خروجی سخت است.
+
+## ۴.۵) حافظهٔ بیرونی عامل و هدرهای خودتوصیف (v0.12)
+
+- **`GET /api/agent/audit?tail=N`** (پیش‌فرض ۲۰، سقف ۱۰۰؛ فقط نشست زنده pst_/aagx_/aa_): آخرین رویدادهای auditِ **همین نشست** (فیلتر `session_sha`). عاملی که بافت مکالمه‌اش بازیافت شده، اول این را می‌خواند و می‌فهمد «قبلاً کجا ایستادم» — سرور به‌جای حافظهٔ گفتگو، مرجع تداوم کار است. توکن ادمین این مسیر را ندارد (audit کامل ادمین با `/api/admin/audit` است) و نشست هرگز رویداد نشست دیگر را نمی‌بیند.
+- **هدرهای هر پاسخ:** `X-API-Version` (نسخهٔ سرویس — تشخیص انحراف نسخه در میانهٔ کار) و `X-Request-Id` (شناسهٔ همین درخواست — قابل نقل در تیکت).
+- **`GET /api/docs?since=<ver>`:** فقط تغییرات پاکت پس از آن نسخه در `since_changes` — عاملِ برگشته از غیبت کل پاکت را دوباره نمی‌خواند (مقایسهٔ عددی نسخه‌ها).
+- **خطاهای بازگشتی:** 401 با `info.iid_rate_cap` و `info.retry_after_s`؛ busy (429) با `retry_after_s` و `info.exec_concurrent_max` — عامل خودش را کم می‌کند، نه آزمون‌وخطای کور.
 
 ## ۵) گرفتن توکن گیت‌هاب برای پوش
 
@@ -139,6 +147,7 @@ curl -sk -H "Authorization: Bearer $ACCESS_AGENT_AGENT_TOKEN" \
 ```
 
 - `purpose` اجباری (≥ ۸ کاراکتر) و در `sessions.jsonl` + audit ثبت می‌شود.
+- **`dry_run: true` (v0.12):** فقط `mode` (`github-app` یا `pat-fallback`) و `stored` را می‌گوید — بدون ساخت grant و بدون افشای توکن؛ عامل پیش از درخواست واقعی می‌داند کدام حالت فعال است.
 - پاسخ `token` را فقط در حافظهٔ فرایند استفاده کنید (push همان چرخه) — هرگز در فایل gitدار ننویسید.
 - **v0.2 — دو حالت، با همان قرارداد:** اگر مالک GitHub App پیکربندی کرده باشد، پاسخ `mode: "github-app"` و `expires_at` دارد — توکن نصبِ واقعی است که حداکثر ۱ ساعت بعد خودش می‌میرد و فقط به مخزن‌های نصب‌شده می‌رسد؛ پات مالک هرگز سرو نمی‌شود. اگر `mode` نبود، حالت فالبک v0.1 فعال است (بند بعد). راهنمای پیکربندی برای مالک: `docs/GITHUB_APP_GUIDE.fa.md`.
 - مدل فالبک v0.1 «افشای نشست‌محور» است: خودِ پات منقضی نمی‌شود؛ ابطال واقعی = چرخش پات توسط مالک (`access-agent set-github-token`). گزارش به مالک بعد از هر افشا لازم نیست، ولی رکورد grant قابل بازبینی ادمین است (`GET /api/admin/sessions`).

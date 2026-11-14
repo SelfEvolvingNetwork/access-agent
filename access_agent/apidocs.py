@@ -1,23 +1,17 @@
-"""API technical reference — access_agent.apidocs (v0.11).
+"""API technical reference — access_agent.apidocs (v0.12).
 
 GET /api/docs (عمومی) — مرجع فنی کامل سرویس برای عامل‌های هوش مصنوعی.
 الگوی مالک ۲۰۲۶-۱۱-۱۳: پاسخ اتصال فقط داده است (توکن/انقضا/لینک مستندات)؛
 کل راهنمای فنی، قلمرو نقش‌ها، قواعد و خطوط قرمز این‌جا زندگی می‌کند.
 
-v0.11 — پاکت هم‌شکل خانواده: بخش تازه family (نقشهٔ چهار سرویس/مخزن
-+ رجیستر INDEX + متن بیداری ECOSYSTEM) و cold_start (زنجیرهٔ خواندن
-عامل سرد) + next_reading برای هر نقش اتصال — داده در
-access_agent.family زندگی می‌کند؛ متن کامل قرارداد:
-docs/FAMILY_PACKETS.fa.md مخزن پرستو.
-
-v0.11.1 (درس میدان ۲۰۲۶-۱۱-۱۴ + شفاف‌سازی مالک — سه لایهٔ توکن):
-(۱) توکن اتصال (pst_) موقت است اما عامل آن را در فایل ایمن نزد خودش
-(chmod 600، gitignored، فضای کاری مانای خودش) نگه می‌دارد — نه در /tmp و
-نه فقط در حافظهٔ گفتگو — تا بازیافت بافت مکالمه اتصال را نکشد؛ در پایان
-مکالمه فایل را پاک می‌کند؛ گام ۵ رویهٔ اتصال و یادداشت auth همین را
-صریح می‌گویند. (۲) توکن اصلی گیت‌هاب فقط روی سرور نزد پل می‌ماند.
-(۳) پل هر بار که لازم شد از توکن اصلی، توکن موقت گیت‌هاب برای عامل
-صادر می‌کند (POST /api/github/token).
+v0.12 (عامل‌پذیری — چهار افزودنی روی پاکت):
+(۱) هدرهای خودتوصیف: هر پاسخ X-API-Version و X-Request-Id دارد؛ پاسخ‌های
+mutating کلید rid (شناسهٔ رکورد audit همان رویداد) را هم می‌برند.
+(۲) /api/agent/audit — حافظهٔ بیرونی عامل: آخرین رویدادهای همین نشست
+(session_sha)؛ عاملِ با بافت بازیافت‌شده اول این را می‌خواند.
+(۳) dry_run روی exec و github/token — پیش‌نمایش بدون اجرا/افشا.
+(۴) خطاهای بازگشتی: 401 info (iid_rate_cap + retry_after_s)، busy با
+retry_after_s و سقف هم‌زمانی.
 
 همه‌چیز داده است، نه دستور رفتاری — عامل‌ها مستندات را می‌خوانند و بر پایهٔ
 درخواست صریح مالک/کاربر عمل می‌کنند. هیچ مقدار راز (توکن/iid) این‌جا نیست.
@@ -33,16 +27,54 @@ from .security import (AGENT_SESSION_TTL_S, AGENT_SESSIONS_MAX, INVITE_TTL_S_DEF
 
 MAX_BODY_BYTES = 100_000  # همان سقف server.MAX_BODY — این‌جا تکرار می‌شود تا import چرخه نسازد
 
+# v0.12 — فهرست تغییرات پاکت از نسخه‌های قبل؛ با ?since=<ver> فقط تغییرات
+# پس از آن نسخه در کلید since_changes برمی‌گردد (عامل برگشته از غیبت، کل
+# پاکت را دوباره نمی‌خواند). روایت کامل هر نسخه: WORKLOG.md مخزن.
+SINCE_LOG = [
+    {"since": "0.12.0", "changes": [
+        "هدرهای X-API-Version و X-Request-Id روی همهٔ پاسخ‌ها",
+        "کلید rid (شناسهٔ رکورد audit) در پاسخ exec/dry_run",
+        "GET /api/agent/audit — حافظهٔ بیرونی عامل (رویدادهای همین نشست)",
+        "dry_run روی POST /api/exec و POST /api/github/token",
+        "خطاهای بازگشتی: 401 info (iid_rate_cap/retry_after_s) و busy با info",
+    ]},
+    {"since": "0.11.2", "changes": [
+        "دعوت مالک همیشه با IP خام + public_port در config.json",
+        "docs_url نقش‌آگاه (مالک → IP، کاربر → دامنه)",
+    ]},
+    {"since": "0.11.1", "changes": [
+        "سه لایهٔ توکن؛ storage_hint فایل ایمن نزد خود عامل (نه /tmp، نه فقط حافظهٔ گفتگو)",
+    ]},
+    {"since": "0.11.0", "changes": [
+        "بخش family (چهار سرویس/مخزن + رجیستر) و cold_start و next_reading",
+    ]},
+]
 
-def docs_payload(version: str) -> dict:
-    """پاکت مستندات فنی — با نسخهٔ سرویس همگام می‌ماند."""
-    return {
+
+def _ver_tuple(v: str) -> tuple[int, ...]:
+    """نسخهٔ نقطه‌دار به تاپل عددی — مقایسهٔ درست 0.11.0 > 0.9.0."""
+    out: list[int] = []
+    for part in str(v).strip().split("."):
+        try:
+            out.append(int(part))
+        except ValueError:
+            break
+    return tuple(out) or (0,)
+
+
+def docs_payload(version: str, since: str = "") -> dict:
+    """پاکت مستندات فنی — با نسخهٔ سرویس همگام می‌ماند.
+
+    since (v0.12): با ?since=<ver> فقط تغییرات پس از آن نسخه در کلید
+    since_changes برمی‌گردد؛ پاکت کامل همیشه کامل می‌ماند (مصرف‌کننده هر
+    چه بخواهد می‌گیرد، چیزی حذف نمی‌شود)."""
+    payload = {
         "ok": True,
         "service": "access-agent",
         "version": version,
         "protocol": f"onboarding/{version}",
         "language": "fa",
-        "updated_for": "v0.11.1 (مانایی نشست عامل)",
+        "updated_for": "v0.12 (عامل‌پذیری: هدرهای خودتوصیف + حافظهٔ بیرونی عامل + dry_run + خطاهای بازگشتی)",
 
         "overview": (
             "پل دسترسی مستقل عامل هوش مصنوعی به سرور مالک — HTTPS + Bearer token. "
@@ -142,10 +174,12 @@ def docs_payload(version: str) -> dict:
              "description": "ثبت‌نام با دعوت‌نامه — بدون iid: سند کوتاه؛ با iid: توکن نقش‌دار"},
             {"method": "GET", "path": "/api/status", "auth": "owner|user|agent",
              "description": "وضعیت میزبان — برای نقش user نسخهٔ فیلترشده (بدون مسیرها و جزئیات داخلی)"},
+            {"method": "GET", "path": "/api/agent/audit", "auth": "owner|agent (فقط نشست pst_/aagx_)",
+             "description": "v0.12 — حافظهٔ بیرونی عامل: آخرین رویدادهای همین نشست (?tail=N؛ پیش‌فرض ۲۰، سقف ۱۰۰) — سالتو با بافت بازیافت‌شده اول این را می‌خواند"},
             {"method": "POST", "path": "/api/exec", "auth": "owner|agent",
-             "description": "اجرای دستور روی هاست — body: {cmd, timeout_s<=600, cwd}؛ برای user ممنوع (403)"},
+             "description": "اجرای دستور روی هاست — body: {cmd, timeout_s<=600, cwd, dry_run?}؛ برای user ممنوع (403)؛ dry_run: پیش‌نمایش بدون اجرا (v0.12)"},
             {"method": "POST", "path": "/api/github/token", "auth": "owner|agent",
-             "description": "توکن موقت گیت‌هاب برای پوش — body: {purpose[, ttl_min<=60]}؛ برای user ممنوع (403)"},
+             "description": "توکن موقت گیت‌هاب برای پوش — body: {purpose[, ttl_min<=60][, dry_run?]}؛ برای user ممنوع (403)؛ dry_run: فقط mode/stored بدون افشا (v0.12)"},
             {"method": "POST", "path": "/api/agent/session/end", "auth": "owner|user|agent",
              "description": "پایان همین نشست — هیچ اعتباری روی سرور نمی‌ماند"},
             {"method": "GET", "path": "/api/admin/invite", "auth": "ادمین",
@@ -183,17 +217,18 @@ def docs_payload(version: str) -> dict:
         ],
 
         "errors": {
-            "model": {"ok": False, "error": "<code>", "detail": "<توضیح فارسی یک‌خطی>"},
+            "model": {"ok": False, "error": "<code>", "detail": "<توضیح فارسی یک‌خطی>",
+                      "info": "<اختیاری (v0.12): دادهٔ بازگشتی برای اصلاح خودکار — مثلاً retry_after_s و iid_rate_cap در 401/429>"},
             "codes": {
                 "400": "bad_json | cmd_required | timeout_out_of_range | ...",
-                "401": "unauthorized — توکن مفقود/نامعتبر/منقضی → دعوت تازه از مالک",
+                "401": "unauthorized — توکن مفقود/نامعتبر/منقضی → دعوت تازه از مالک (info: iid_rate_cap + retry_after_s)",
                 "403": "forbidden (نیاز به ادمین) | agent_realm_paused | agent_scope_forbidden (نقش user)",
                 "404": "not_found | unknown_invite (ناشناخته/منقضی/مصرف‌شده)",
                 "405": "method_not_allowed",
                 "409": "lifecycle_busy | invite_unavailable",
                 "410": "مسیر بازنشسته",
                 "413": "body_too_large",
-                "429": "rate_limited (خطای iid؛ حداکثر ۱۰ در ۵ دقیقه از هر IP) | busy (exec)",
+                "429": "rate_limited (خطای iid؛ حداکثر ۱۰ در ۵ دقیقه از هر IP) | busy (exec؛ info: retry_after_s + exec_concurrent_max)",
             },
         },
 
@@ -206,10 +241,28 @@ def docs_payload(version: str) -> dict:
             "github_token_ttl_min_max": 60,
         },
 
+        "self_description": {
+            "response_headers": {
+                "X-API-Version": "نسخهٔ سرویس روی هر پاسخ — انحراف نسخه در میانهٔ کار را بی‌خطر تشخیص بده",
+                "X-Request-Id": "شناسهٔ یکتای همین درخواست — قابل نقل در تیکت/گزارش",
+            },
+            "mutating_responses": {
+                "rid": "شناسهٔ رکورد audit همان رویداد (exec/dry_run) — قابل نقل در تیکت؛ مقدار راز ندارد",
+            },
+            "agent_memory": {
+                "path": "GET /api/agent/audit?tail=N",
+                "note": "رویدادهای همین نشست (session_sha) — با بازیافت بافت مکالمه، سرور مرجع تداوم کار است",
+            },
+            "dry_run": {
+                "paths": ["POST /api/exec", "POST /api/github/token"],
+                "note": "پارامتر اختیاری dry_run:true — پیش‌نمایش بدون اجرا/افشا؛ همان اعتبارسنجی‌ها",
+            },
+        },
+
         "conventions": {
             "content_type": "application/json; charset=utf-8",
             "timestamps": "ISO-8601؛ انقضای نشست/توکن همیشه UTC با پسوند Z",
-            "audit": "هر فراخوانی در audit.jsonl ثبت می‌شود — بدون هیچ مقدار توکن/iid",
+            "audit": "هر فراخوانی در audit.jsonl ثبت می‌شود — بدون هیچ مقدار توکن/iid؛ رکوردهای نقش agent از v0.12 session_sha و request_id دارند",
             "secrets_on_disk": "فقط SHA-256؛ توکن خام هرگز ذخیره/لاگ نمی‌شود",
         },
 
@@ -223,3 +276,10 @@ def docs_payload(version: str) -> dict:
         "cold_start": cold_start_payload(),
         "docs": docs_url(),
     }
+    # v0.12 — فیلتر since: فقط تغییرات پس از نسخهٔ خواسته‌شده (مقایسهٔ عددی)
+    if since:
+        ref = _ver_tuple(since)
+        trimmed = [row for row in SINCE_LOG if _ver_tuple(row["since"]) > ref]
+        payload["since_changes"] = trimmed
+        payload["since_requested"] = str(since).strip()
+    return payload

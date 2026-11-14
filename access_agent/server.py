@@ -95,6 +95,7 @@ superset. Tokens stored as SHA-256 hashes in ACCESS_AGENT_HOME/tokens.json.
 """
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import shutil
@@ -112,7 +113,8 @@ from .execbridge import run_exec
 from .githubbroker import disclose, grants_tail, save_token, stored_token
 from .handoff import (build_block, build_connection_payload,
                       build_invite, cert_fingerprint, onboarding_doc)
-from .security import (agent_session_role, audit, audit_tail, agent_paused,
+from .security import (agent_session_role, agent_session_sha, audit, audit_me,
+                       audit_tail, agent_paused,
                        check_agent_session, check_token,
                        claim_invite_session, clear_agent_sessions, home,
                        load_state, load_tokens, mint_invite, now_iso,
@@ -123,6 +125,10 @@ from .security import (agent_session_role, audit, audit_tail, agent_paused,
 MAX_BODY = 100_000
 MAX_BODY_HARD = 1_000_000
 STARTED_AT = time.monotonic()
+
+# v0.12 — شناسه‌ی درخواست: هر پاسخ X-Request-Id دارد؛ rid اولین رویداد audit
+# همان درخواست در پاسخ‌های mutating برمی‌گردد (قابل نقل در تیکت، بدون راز).
+REQ_SEQ = itertools.count(1)
 
 POST_ONLY = {
     "/api/exec",
@@ -140,6 +146,7 @@ POST_ONLY = {
     "/api/admin/revoke-agent-sessions",
 }
 GET_ONLY = {"/", "/healthz", "/api/docs", "/api/agent/onboarding", "/api/status",
+            "/api/agent/audit",
             "/api/admin/audit",
             "/api/admin/audit/stream", "/api/admin/sessions",
             "/api/admin/agent-token", "/api/admin/handoff",
@@ -249,22 +256,50 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- plumbing ----
     def _send(self, code: int, obj: dict) -> None:
+        """v0.12 — هر پاسخ دو هدر خودتوصیف دارد: X-API-Version (تشخیص انحراف
+        نسخه در میانه‌ی کار — عامل برگشته از یک ماهvacation فقط diff را
+        می‌خواند، نه کل پاکت) و X-Request-Id (قابل نقل در تیکت؛ همان شناسه‌ای
+        که rid رویداد audit برای پاسخ‌های mutating می‌دهد)."""
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-API-Version", VERSION)
+        self.send_header("X-Request-Id", self._request_id())
         self.end_headers()
         try:
             self.wfile.write(body)
         except BrokenPipeError:
             pass
 
+    def _request_id(self) -> str:
+        """شناسه‌ی یکتای همین درخواست — pid/counter/زمان؛ هرگز رازی ندارد."""
+        rid = getattr(self, "_rid_cache", "")
+        if not rid:
+            rid = f"r{next(REQ_SEQ):06d}-{int(time.time() * 1000) % 1_000_000:06d}"
+            self._rid_cache = rid
+        return rid
+
     def log_message(self, fmt, *args):  # minimal, token-free (headers never logged)
         print(f"[{self.log_date_time_string()}] {fmt % args}", flush=True)
 
     def _peer_ip(self) -> str:
         return self.client_address[0] if self.client_address else ""
+
+    def _audit(self, role: str, action: str, detail: dict | None = None) -> str:
+        """v0.12 — audit نقش‌دار با نشست‌گرایی: رویدادهای نقش agent هش نشستِ
+        فراخواننده را می‌گیرند (session_sha) تا /api/agent/audit بتواند
+        «کارهای خودِ من» را جدا کند؛ rid رکورد برگردانده می‌شود تا پاسخ
+        mutating همان را با کلید rid ببرد (قابل نقل در تیکت). مقدار خام
+        توکن هرگز ذخیره نمی‌شود — فقط همین هش."""
+        d = dict(detail or {})
+        if role == "agent":
+            sha = agent_session_sha(self._bearer())
+            if sha:
+                d.setdefault("session_sha", sha)
+        d.setdefault("request_id", self._request_id())
+        return audit(role, action, d, self._peer_ip())
 
     def _bearer(self) -> str:
         h = self.headers.get("Authorization", "")
@@ -328,14 +363,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def _guard(self, need: str) -> str:
         """need: "public" | "agent" (agent or admin) | "admin".
-        Returns the role; on failure sends the error response and returns ""."""
+        Returns the role; on failure sends the error response and returns "".
+
+        v0.12 — خطای 401 اطلاع‌های بازگشتی دارد (retry_after_s برای نرخ‌سنجی
+        iid و کلید قبول برای احراز) تا عامل بدون آزمون‌وخطا مسیر اصلاح را
+        ببیند — همان الگوی نرخ‌سنجی خطای iid که از v0.9 بود، تعمیم‌یافته."""
         if need == "public":
             return "public"
         role = self._role()
         if not role:
             audit("anon", "auth_fail", {"path": self.path.split("?")[0]}, self._peer_ip())
+            from .security import onboarding_fail_policy
+            pol = onboarding_fail_policy()
             self._send(401, {"ok": False, "error": "unauthorized",
-                             "detail": "missing or invalid bearer token"})
+                             "detail": "missing or invalid bearer token",
+                             "info": {"iid_rate_cap":
+                                      f"{pol['cap']}/{pol['window_s'] // 60}min per IP "
+                                      "(failed tries only)",
+                                      "retry_after_s": pol["retry_after_s"]}})
             return ""
         if need == "admin" and role != "admin":
             audit(role, "auth_forbidden", {"path": self.path.split("?")[0]}, self._peer_ip())
@@ -343,6 +388,14 @@ class Handler(BaseHTTPRequestHandler):
                              "detail": "this endpoint requires the admin token"})
             return ""
         return role
+
+    def _busy_response(self, detail: str, retry_after_s: int = 5) -> None:
+        """v0.12 — پاسخ استاندارد 429 busy: عامل خودش را کم می‌کند چون می‌داند
+        چند ثانیه صبر کند و سقف هم‌زمانی چقدر است — به‌جای آزمون‌وخطای کور."""
+        from .execbridge import MAX_CONCURRENT
+        self._send(429, {"ok": False, "error": "busy", "detail": detail,
+                         "retry_after_s": retry_after_s,
+                         "info": {"exec_concurrent_max": MAX_CONCURRENT}})
 
     def _query_int(self, key: str, default: int, lo: int = 1,
                    hi: int = 2000) -> int:
@@ -397,9 +450,11 @@ class Handler(BaseHTTPRequestHandler):
                                     "detail": "independent AI-agent bridge; see /healthz, /api/docs and /api/status",
                                     "agent_connected": bool(self._role())})
         # v0.10 — مرجع فنی کامل (عمومی): لینک مستنداتی که پاسخ اتصال می‌برد
+        # v0.12 — ?since=<ver>: فقط تغییرات پس از آن نسخه (diff برای عاملِ برگشته)
         if path == "/api/docs":
             audit("anon", "api_docs_read", {}, self._peer_ip())
-            return self._send(200, apidocs.docs_payload(VERSION))
+            since = self._query_param("since", max_len=20)
+            return self._send(200, apidocs.docs_payload(VERSION, since))
         # v0.9.1 — اتصال مستقیم: خودِ iid اعتبار است؛ نه رمز، نه poll (فرمان
         # مالک ۲۰۲۶-۱۱-۱۳). بدون iid فقط سند کوتاه؛ با iid توکن در همان پاسخ.
         # v0.9.2 (فرمان مالک — چت‌های سوم/چهارم): قالب دوم — iid در انتهای مسیر
@@ -449,6 +504,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, user_status())
             audit(role, "status", {}, self._peer_ip())
             return self._send(200, host_status())
+        # v0.12 — حافظهٔ بیرونی عامل: آخرین رویدادهای همین نشست؛ عاملی که
+        # بافت مکالمه‌اش بازیافت شده اول این را می‌خواند و می‌فهمد قبلاً کجا
+        # ایستاده است. فقط نشست (هش) خودش را می‌بیند — نه دیگران را؛ توکن
+        # ادمین این مسیر را ندارد (audit کامل ادمین با /api/admin/audit).
+        if path == "/api/agent/audit":
+            sha = agent_session_sha(self._bearer())
+            if not sha:
+                audit(role, "agent_audit_forbidden", {}, self._peer_ip())
+                return self._send(403, {"ok": False, "error": "forbidden",
+                                        "detail": "this endpoint needs a live "
+                                                  "agent session (pst_/aagx_)"})
+            tail = self._query_int("tail", 20)
+            events = audit_me(sha, tail)
+            self._audit("agent", "agent_audit_self", {"tail": tail, "got": len(events)})
+            return self._send(200, {"ok": True, "events": events, "n": len(events)})
         if path == "/api/admin/audit":
             role = self._guard("admin")
             if not role:
@@ -593,6 +663,56 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self._user_scope_guard(path):  # v0.10 — قلمرو کاربر: exec ممنوع
                 return
+            # v0.12 — dry_run: پیش‌نمایش بدون اجرا. همان اعتبارسنجی‌های exec
+            # (طول/تایم‌اوت/cwd/تقابل lifecycle) انجام می‌شود ولی دستور روی
+            # هاست اجرا نمی‌شود؛ پاسخ پیش‌نمایش مسیر، تقابل lifecycle و سقف‌ها
+            # را می‌گوید. «نمی‌توانم اشتباه کنم» به‌جای «باید حواسم باشد».
+            if data.get("dry_run"):
+                cmd = str(data.get("cmd") or "")
+                preview = {
+                    "ok": True,
+                    "dry_run": True,
+                    "executed": False,
+                    "cmd_len": len(cmd),
+                    "timeout_s": data.get("timeout_s", 60),
+                    "cwd": data.get("cwd") or None,
+                }
+                if not cmd.strip():
+                    return self._send(400, {"ok": False, "error": "cmd_required"})
+                from .execbridge import MAX_CMD_CHARS, MAX_TIMEOUT_S
+                if len(cmd) > MAX_CMD_CHARS:
+                    return self._send(400, {"ok": False, "error": "cmd_too_long",
+                                            "limit": MAX_CMD_CHARS})
+                try:
+                    t = int(data.get("timeout_s", 60))
+                except (TypeError, ValueError):
+                    return self._send(400, {"ok": False, "error": "bad_timeout"})
+                if t < 1 or t > MAX_TIMEOUT_S:
+                    return self._send(400, {"ok": False, "error": "timeout_out_of_range",
+                                            "limit": MAX_TIMEOUT_S})
+                blocked = parastoolifecycle.exec_block_reason(cmd)
+                preview["lifecycle_conflict"] = bool(blocked)
+                if blocked:
+                    preview["would_reject"] = {"error": "lifecycle_busy", "detail": blocked}
+                else:
+                    # تحلیل استاتیک همان موتور گارد — حتی وقتی عملیاتی در
+                    # جریان نیست، دستورِ متقابل را علامت می‌زند تا عامل پیش
+                    # از اجرای واقعی بداند قاعدهٔ «یک بازیگر تغییردهنده» چه می‌گوید.
+                    from .execbridge import lifecycle_conflict
+                    tok = lifecycle_conflict(cmd)
+                    if tok:
+                        preview["lifecycle_conflict"] = True
+                        preview["would_reject_if_busy"] = {
+                            "error": "lifecycle_busy",
+                            "conflict_token": tok,
+                            "note": "this cmd conflicts with lifecycle ops — "
+                                    "rejected while an op runs; read-only passes",
+                        }
+                rid = self._audit("agent", "exec_dry_run",
+                                  {"cmd_len": len(cmd), "cmd_preview": cmd[:400],
+                                   "lifecycle_conflict": bool(blocked)})
+                preview["rid"] = rid
+                return self._send(200, preview)
             # v0.5.1 — one platform-mutating actor at a time (owner decree
             # «one transparent pipeline»): while a parastoo lifecycle op runs,
             # conflicting exec is refused; read-only supervision passes.
@@ -606,6 +726,8 @@ class Handler(BaseHTTPRequestHandler):
                                         "detail": blocked})
             res = run_exec(data.get("cmd"), data.get("timeout_s", 60), data.get("cwd"))
             if not res.get("ok"):
+                if res.get("error") == "busy":  # v0.12 — پاسخ استاندارد busy + info
+                    return self._busy_response(str(res.get("detail") or "exec busy"))
                 audit(role, "exec_rejected",
                       {"error": res.get("error"), "cmd_len": len(str(data.get("cmd") or ""))},
                       self._peer_ip())
@@ -613,14 +735,14 @@ class Handler(BaseHTTPRequestHandler):
             # v0.3: richer live-monitoring record for parastoo-mobile — bounded
             # previews so audit.jsonl stays lean; the agent produces no reports,
             # the bridge captures everything software-side.
-            audit(role, "exec",
-                  {"exit_code": res.get("exit_code"), "timed_out": res.get("timed_out"),
-                   "duration_ms": res.get("duration_ms"),
-                   "cmd_len": len(str(data.get("cmd") or "")),
-                   "cmd_preview": str(data.get("cmd") or "")[:400],
-                   "stdout_preview": str(res.get("stdout") or "")[:600],
-                   "stderr_preview": str(res.get("stderr") or "")[:300]},
-                  self._peer_ip())
+            rid = self._audit(role, "exec",
+                              {"exit_code": res.get("exit_code"), "timed_out": res.get("timed_out"),
+                               "duration_ms": res.get("duration_ms"),
+                               "cmd_len": len(str(data.get("cmd") or "")),
+                               "cmd_preview": str(data.get("cmd") or "")[:400],
+                               "stdout_preview": str(res.get("stdout") or "")[:600],
+                               "stderr_preview": str(res.get("stderr") or "")[:300]})
+            res["rid"] = rid
             return self._send(200, res)
 
         if path == "/api/github/token":
@@ -631,6 +753,18 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self._user_scope_guard(path):  # v0.10 — قلمرو کاربر: توکن گیت‌هاب ممنوع
                 return
+            # v0.12 — dry_run: حالت توکن را می‌گوید (github-app یا PAT فالبک)
+            # بدون ساخت grant و بدون افشا. mode فالبک اگر پیکربندی نشده باشد
+            # مستقل از dry_run همان می‌ماند که همیشه بوده.
+            if data.get("dry_run"):
+                mode = "github-app" if githubapp.configured() else "pat-fallback"
+                has_token = githubapp.configured() or bool(stored_token())
+                rid = self._audit("agent", "github_token_dry_run",
+                                  {"mode": mode, "stored": has_token})
+                return self._send(200, {"ok": True, "dry_run": True,
+                                        "disclosed": False, "mode": mode,
+                                        "stored": has_token, "rid": rid,
+                                        "note": "dry_run only — no grant, no token"})
             # v0.2: GitHub App mode serves REAL <=1h installation tokens and
             # never touches the master PAT; PAT mode stays only as the
             # fallback while the owner has not configured an app yet.

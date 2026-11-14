@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import json
 import os
+import secrets
 import threading
 import time
 from pathlib import Path
@@ -71,8 +72,47 @@ def audit(actor: str, action: str, detail: dict | None = None, ip: str = "") -> 
     rec = {"ts": now_iso(), "ip": ip, "actor": actor, "action": action}
     if detail:
         rec.update(detail)
+    # v0.12 — شناسهٔ یکتای رکورد: نقل‌کردنی در تیکت و پاسخ‌های mutating، بدون
+    # افشای توکن/iid (اولین ۸ کاراکتر هش رکورد؛ نادر بودن برخورد کافی است).
+    rid = hashlib.sha256(
+        json.dumps(rec, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        + secrets.token_hex(8).encode("utf-8")).hexdigest()[:12]
+    rec["rid"] = rid
     with (d / "audit.jsonl").open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return rid
+
+
+def audit_me(sha: str, tail: int = 20) -> list[dict]:
+    """v0.12 — حافظهٔ بیرونی عامل: آخرین رویدادهای audit همین نشست.
+
+    sha = هش نشستِ ارائه‌شده (هرگز خود توکن). فقط رویدادهایی که خودِ این نشست
+    تولید کرده را برمی‌گرداند (مقایسهٔ زمان-ثابت روی sha)؛ پیش‌نمایش‌ها همان
+    قیود audit را دارند (بدون مقدار توکن/iid). سرور به‌جای حافظهٔ گفتگو، مرجع
+    تداوم کار می‌کند — عاملِ با بافت بازیافت‌شده اول این را می‌خواند و
+    می‌فهمد «قبلاً کجا ایستادم».
+    """
+    p = home() / "audit" / "audit.jsonl"
+    if not p.exists():
+        return []
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except Exception:
+        return []
+    out: list[dict] = []
+    for line in lines:
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        if hmac.compare_digest(str(rec.get("session_sha", "")), str(sha)):
+            out.append(rec)
+            if len(out) >= max(1, min(int(tail), 100)):
+                break
+    return out
 
 
 def audit_tail(n: int) -> list[str]:
@@ -282,6 +322,13 @@ ONBOARD_FAIL_WINDOW_S = 300
 ONBOARD_FAIL_MAX = 10
 
 
+def onboarding_fail_policy() -> dict:
+    """v0.12 — سیاست نرخ‌سنجی خطای iid برای پاسخ‌های 401/429 (قابل انتشار؛
+    راز نیست) — تا عامل بدون آزمون‌وخطا بداند سقف چیست و چند ثانیه صبر کند."""
+    return {"cap": ONBOARD_FAIL_MAX, "window_s": ONBOARD_FAIL_WINDOW_S,
+            "retry_after_s": ONBOARD_FAIL_WINDOW_S}
+
+
 def load_agent_sessions() -> dict:
     p = home() / "agent_sessions.json"
     try:
@@ -352,6 +399,18 @@ def check_agent_session(presented: str) -> bool:
         save_agent_sessions(data)
     h = sha256_hex(presented)
     return any(hmac.compare_digest(h, s.get("sha", "")) for s in live)
+
+
+def agent_session_sha(presented: str) -> str:
+    """v0.12 — هش نشستِ ارائه‌شده ("" اگر معتبر نیست) — برای session_sha در
+    رویدادهای audit همین نشست و فیلتر audit_me. هم نشست‌های موقت pst_/aagx_
+    و هم توکن بلندمدت aa_ پذیرفته می‌شوند (هش در هر دو حالت نزد سرور هست —
+    agent_sessions.json یا tokens.json). مقدار خام هرگز ذخیره نمی‌شود."""
+    if not presented:
+        return ""
+    if check_agent_session(presented) or check_token(presented, "agent"):
+        return sha256_hex(presented)
+    return ""
 
 
 def agent_session_role(presented: str) -> str:
