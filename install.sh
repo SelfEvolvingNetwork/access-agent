@@ -172,6 +172,9 @@ if [ "$FRESH" = "1" ]; then
   # پنل/دامنه را استقرار داده باشد، ACCESS_AGENT_HOST آن را ثبت می‌کند؛
   # خالی می‌ماند تا دعوت‌ها با IP ساخته شوند (bootstrap مالک روی IP خام).
   HOST="${ACCESS_AGENT_HOST:-}"
+  # v0.11.2 — پورت عمومی URL (پلِ پشت پروکسی لبهٔ پلتفرم؛ فرمان مالک ۲۰۲۶-۱۱-۱۴):
+  # bind داخلی (PORT) «هویت» سرور می‌ماند؛ public_port فقط ساخت URL است.
+  PUBLIC_PORT="${ACCESS_AGENT_PUBLIC_PORT:-}"
   # v0.2.1: a provisioning client (e.g. Parastoo Mobile) may generate the tokens
   # on-device and pass them via env — such tokens are NEVER printed back.
   ADMIN_TOKEN="${ACCESS_AGENT_ADMIN_TOKEN:-}"
@@ -220,6 +223,13 @@ else
   # v0.10 — دامنه با پیوستگی: env صریح غالب؛ وگرنه مقدار ثبت‌شده می‌ماند.
   OLD_HOST="$("$PYBIN" -c "import json;print(json.load(open('$ETC/config.json')).get('host',''))" 2>/dev/null || true)"
   HOST="${ACCESS_AGENT_HOST:-$OLD_HOST}"
+  # v0.11.2 — پورت عمومی URL با پیوستگی (آینهٔ host؛ فرمان مالک ۲۰۲۶-۱۱-۱۴:
+  # «دعوت‌نامهٔ مالک حتماً با آیپی و پورت استاندارد»): env صریح غالب؛ وگرنه
+  # مقدار ثبت‌شده می‌ماند — پورت bind (هویت سرور، §۸-۱۱) هرگز از این مسیر
+  # عوض نمی‌شود؛ public_port فقط ساخت URL است (443 هرگز در URL نمی‌آید).
+  OLD_PUBLIC_PORT="$("$PYBIN" -c "import json;print(json.load(open('$ETC/config.json')).get('public_port',''))" 2>/dev/null || true)"
+  PUBLIC_PORT="${ACCESS_AGENT_PUBLIC_PORT:-$OLD_PUBLIC_PORT}"
+  case "$PUBLIC_PORT" in ''|*[!0-9]*) PUBLIC_PORT="" ;; esac
   # v0.8.3 — IP CONTINUITY (the field bug behind the owner's warning
   # «آی‌پی لوکال به‌جای آی‌پی اصلی سرور»): the recorded address is SERVER
   # IDENTITY, not version (mirror of the §۲.۱ cert rule). The old code
@@ -347,13 +357,17 @@ fi
 
 # record config (never contains secrets)
 COMMIT="${ACCESS_AGENT_DEPLOYED_COMMIT:-}"
-"$PYBIN" - "$ETC" "$PORT" "$IP" "$VERSION" "$COMMIT" "${HOST:-}" <<'PY'
+"$PYBIN" - "$ETC" "$PORT" "$IP" "$VERSION" "$COMMIT" "${HOST:-}" "${PUBLIC_PORT:-}" <<'PY'
 import json, os, sys, time
-etc, port, ip, ver, commit, host = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
+etc, port, ip, ver, commit, host, public_port = (sys.argv[1], sys.argv[2], sys.argv[3],
+                                                   sys.argv[4], sys.argv[5], sys.argv[6],
+                                                   sys.argv[7])
 cfg = {"port": int(port), "ip": ip, "version": ver, "commit": commit,
        "installed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
 if host:  # v0.10 — دامنهٔ عمومی اختیاری؛ خالی = دعوت‌ها با IP ساخته می‌شوند
     cfg["host"] = host
+if public_port:  # v0.11.2 — پورت عمومی URL (پلِ پشت پروکسی لبه؛ bind داخلی جدا)
+    cfg["public_port"] = int(public_port)
 with open(os.path.join(etc, "config.json"), "w", encoding="utf-8") as f:
     json.dump(cfg, f, indent=2)
 PY
@@ -444,11 +458,13 @@ fi
 # ---------- 5) report ----------
 CERT_SHA="$(openssl x509 -in "$ETC/tls/cert.pem" -noout -fingerprint -sha256 2>/dev/null \
   | sed 's/^.*Fingerprint=//' | tr -d ':' || true)"
-# v0.10 — پورت 443 پیش‌فرض HTTPS است؛ در نشانی چاپی نمی‌آید
-if [ "$PORT" = "443" ]; then
+# v0.11.2 — نشانی چاپی از پورت عمومی می‌آید (public_port برای پلِ پشت پروکسی
+# لبهٔ پلتفرم؛ وگرنه همان پورت bind)؛ پورت 443 پیش‌فرض HTTPS است و در URL نمی‌آید
+URL_PORT="${PUBLIC_PORT:-$PORT}"
+if [ "$URL_PORT" = "443" ]; then
   URL="https://${IP}"
 else
-  URL="https://${IP}:${PORT}"
+  URL="https://${IP}:${URL_PORT}"
 fi
 
 ORG_REPO_URL="https://raw.githubusercontent.com/SelfEvolvingNetwork/access-agent/main"
@@ -486,6 +502,7 @@ REPORT="$ETC/install-report.txt"
   echo "INVITE:          sudo access-agent invite owner   # دعوت مالک (pinv_ — قلمرو کامل، توکن pst_ ۳۰ روز)"
   echo "                  sudo access-agent invite user <name>  # دعوت کاربر (uinv_ — قلمرو محدود، توکن pst_ ۲۴ ساعت)"
   echo "PORT MIGRATION:   sudo ACCESS_AGENT_PORT=443 bash install.sh   # مهاجرت عمدی به پورت رایج (فرمان مالک v0.10)"
+  echo "PUBLIC_PORT:      sudo ACCESS_AGENT_PUBLIC_PORT=443 bash install.sh   # پلِ پشت پروکسی لبه: پورت عمومی URL بدون تغییر bind (v0.11.2)"
   echo "SELF-UPDATE:     timer access-agent-update.timer (~10min) — on/off/run/status:  sudo access-agent autoupdate ..."
   echo "SERVICE:         systemctl status $SERVICE --no-pager"
   echo "UNINSTALL:       curl -fsSL $ORG_REPO_URL/uninstall.sh | sudo bash"

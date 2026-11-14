@@ -15,6 +15,15 @@ v0.11.1 (درس میدان ۲۰۲۶-۱۱-۱۴ + شفاف‌سازی مالک —
 سرور در فایل امن (/etc/access-agent/github.env) نزد پل می‌ماند. (۳) پل توکن
 اصلی را از کاربر از طریق پرستو موبایل می‌گیرد (admin/set-github-token) و هر
 بار که لازم شد توکن موقت گیت‌هاب برای عامل صادر می‌کند (POST /api/github/token).
+
+v0.11.2 (فرمان مالک ۲۰۲۶-۱۱-۱۴ — «دعوت‌نامهٔ مالک حتماً با آیپی و پورت
+استاندارد؛ پل روی پورت استاندارد»): (۱) نقش مالک همیشه IP خام است — حتی
+وقتی host دامنه‌ای ثبت شده (دعوت کاربر با دامنه می‌ماند؛ قرارداد §۱.۵ همین
+را می‌گفت و کد حالا هم‌جهت شد). (۲) کلید تازه public_port در config.json:
+وقتی پل پشت پروکسی لبهٔ پلتفرم گوش می‌دهد و ورودی عمومی ۴۴۳ استاندارد
+است، پورت bind داخلی هرگز در URL نمی‌آید؛ پورت bind «هویت» سرور می‌ماند
+(گارد خودآپدیت §۸-۱۱ دست نمی‌زند) و public_port فقط برای ساخت URL است.
+(۳) docs_url نقش‌آگاه شد و بلوک تحویل قدیمی هم IP عمومی می‌دهد.
 """
 from __future__ import annotations
 
@@ -113,7 +122,7 @@ def build_block() -> str:
         "  گزارش بده، نه کل مأموریت را رد نکن.\n"
         "\n"
         "مقادیر اتصال:\n"
-        f"ACCESS_URL:  https://{cfg['ip']}:{cfg['port']}\n"
+        f"ACCESS_URL:  {public_base_url('owner')}\n"
         f"CERT_SHA256: {cert_fingerprint()}\n"
         f"AGENT_TOKEN: {agent_token()}\n"
         "\n"
@@ -148,15 +157,26 @@ GARDESH_SEGMENT = "gardesh"  # v0.10 — الگوی مالک: قالب مسیر 
 DEFAULT_PORT = 443  # v0.10 — «پورت اتصال پل یک پورت رایج»؛ در نصب تازه پیش‌فرض است
 
 
-def public_base_url() -> str:
-    """v0.10 — نشانی عمومی سرویس: host (اگر دامنه ثبت شده) یا ip؛
-    پورت 443 که پیش‌فرض HTTPS است هرگز در URL نمی‌آید (الگوی مالک)."""
+def public_base_url(role: str = "user") -> str:
+    """v0.11.2 — نشانی عمومی سرویس بر پایهٔ نقش دعوت (فرمان مالک ۲۰۲۶-۱۱-۱۴:
+    «دعوت‌نامهٔ مالک حتماً با آیپی و پورت استاندارد»).
+
+    نقش مالک (pinv_) → IP خام: خوانایی برای هر عامل و بی‌وابستگی به دامنه.
+    نقش کاربر (uinv_) → دامنهٔ ثبت‌شده اگر هست (وگرنه IP).
+
+    پورتِ URL از public_port می‌آید (کلید اختیاری config.json برای پلِ پشت
+    پروکسی لبهٔ پلتفرم — ورودی عمومی ۴۴۳ استاندارد و bind داخلی جدا)؛
+    فالبک: port. پورت ۴۴۳ که پیش‌فرض HTTPS است هرگز در URL نمی‌آید
+    (الگوی مالک)."""
     cfg = _cfg()
-    host = str(cfg.get("host") or cfg.get("ip") or "").strip()
+    if role == "owner":
+        host = str(cfg.get("ip") or cfg.get("host") or "").strip()
+    else:
+        host = str(cfg.get("host") or cfg.get("ip") or "").strip()
     if not host:
         return ""
     try:
-        port = int(cfg.get("port") or 0)
+        port = int(cfg.get("public_port") or cfg.get("port") or 0)
     except (TypeError, ValueError):
         port = 0
     if port and port != DEFAULT_PORT:
@@ -183,8 +203,8 @@ def build_invite(iid: str) -> str:
     inv_ قدیمی روی قالب ساده (سازگاری با دعوت‌های زنده و اپ موبایل). خودِ سرور
     پس از فراخوانی لینک، توکن نقش‌دار (pst_) و راهنما را در همان پاسخ می‌دهد.
     TTL و برچسب کاربر در پاسخ JSON مسیر ادمین می‌مانند. پورت 443 پیش‌فرضِ
-    HTTPS است و در URL نمی‌آید؛ دعوت مالک با IP خام (پیش از استقرار دامنه)
-    و دعوت کاربر با دامنه — هر دو همین یک ساختار را دارند (فرمان مالک).
+    HTTPS است و در URL نمی‌آید؛ v0.11.2 (فرمان مالک ۲۰۲۶-۱۱-۱۴): دعوت مالک
+    همیشه با IP خام است — حتی پس از استقرار دامنه — و دعوت کاربر با دامنه.
     """
     miss = invite_missing_inputs()
     if miss:
@@ -192,7 +212,7 @@ def build_invite(iid: str) -> str:
     if not iid or not any(iid.startswith(p) for p in INVITE_ROLE_PREFIXES.values()):
         raise RuntimeError("invite id missing — mint one via security.mint_invite")
     role = role_of_iid(iid)
-    base = public_base_url()
+    base = public_base_url(role)
     if role in ("owner", "user"):  # الگوی مالک — قالب gardesh
         url = f"{base}{ONBOARDING_ENDPOINT}/{GARDESH_SEGMENT}/{iid}"
     else:  # inv_ قدیمی — قالب ساده برای سازگاری
@@ -231,9 +251,10 @@ ROLE_SCOPES = {
 }
 
 
-def docs_url() -> str:
-    """v0.10 — لینک مستندات فنی که پاسخ اتصال می‌برد (الگوی مالک)."""
-    base = public_base_url()
+def docs_url(role: str = "user") -> str:
+    """v0.11.2 — لینک مستندات فنی که پاسخ اتصال می‌برد (الگوی مالک)؛
+    نقش‌آگاه: هم‌قاعده با دعوت همان نقش (مالک → IP، کاربر → دامنه)."""
+    base = public_base_url(role)
     return f"{base}/api/docs" if base else ""
 
 
@@ -304,7 +325,7 @@ def build_connection_payload(res: dict, *, version: str, cert_sha: str) -> dict:
                          "گفتگو؛ تا با بازیافت بافت مکالمه، اتصال پایدار بماند "
                          "(توکن موقت است: انقضا/گم‌شدن → 401 → دعوت تازه از "
                          "مالک؛ پایان مکالمه → فایل را پاک کنید)."),
-        "docs": docs_url(),
+        "docs": docs_url(role),
         "scope": ROLE_SCOPES.get(role, ROLE_SCOPES["agent"]),
         "cert_sha256": cert_sha,
         "end": {"method": "POST", "path": "/api/agent/session/end",

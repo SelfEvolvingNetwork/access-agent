@@ -91,7 +91,7 @@ os.environ["ACCESS_AGENT_NO_TLS"] = "1"
 
 sys.path.insert(0, str(REPO))
 from access_agent import appcore  # noqa: E402
-from access_agent.handoff import build_invite, onboarding_doc  # noqa: E402
+from access_agent.handoff import build_invite, docs_url, onboarding_doc  # noqa: E402
 from access_agent.security import (check_agent_session, live_invite_stats,  # noqa: E402
                                    mint_agent_session, mint_invite,
                                    revoke_agent_session, INVITE_ROLE_PREFIXES)
@@ -523,6 +523,27 @@ def main() -> int:
     ch("build_invite: host ثبت‌شده بر ip غالب است (الگوی دعوت کاربر با دامنه)",
        build_invite("uinv_" + "a" * 24).startswith(
            "لطفا با api من یک اتصال پایدار ایجاد کنید: https://panel.example.ir/"))
+    # v0.11.2 — فرمان مالک ۲۰۲۶-۱۱-۱۴: «دعوت‌نامهٔ مالک حتماً با آیپی و پورت استاندارد»
+    ch("build_invite: دعوت مالک با IP خام است حتی با host ثبت‌شده (فرمان مالک v0.11.2)",
+       build_invite("pinv_" + "a" * 24).startswith(
+           "لطفا با api من یک اتصال پایدار ایجاد کنید: https://203.0.113.7/"))
+    # public_port — پلِ پشت پروکسی لبه: پورت عمومی URL جدا از پورت bind داخلی
+    (Path(TMP) / "config.json").write_text(json.dumps({
+        "ip": "203.0.113.7", "port": 9999, "public_port": 443,
+        "host": "panel.example.ir", "version": "0.11.2",
+    }), encoding="utf-8")
+    ch("build_invite: public_port 443 پورت داخلی bind را در URL نمی‌آورد (هر دو نقش)",
+       ":9999" not in build_invite("pinv_" + "a" * 24)
+       and ":9999" not in build_invite("uinv_" + "a" * 24)
+       and "https://203.0.113.7/api/agent/onboarding/gardesh/pinv_" in build_invite("pinv_" + "a" * 24))
+    ch("docs_url: نقش‌آگاه — مالک با IP، کاربر با دامنه (v0.11.2)",
+       docs_url("owner") == "https://203.0.113.7/api/docs"
+       and docs_url("user") == "https://panel.example.ir/api/docs")
+    (Path(TMP) / "config.json").write_text(json.dumps({
+        "ip": "203.0.113.7", "port": 9999, "version": "0.11.2",
+    }), encoding="utf-8")
+    ch("build_invite: بدون public_port همان پورت bind در URL می‌آید (سازگاری)",
+       ":9999" in build_invite("pinv_" + "a" * 24))
     (Path(TMP) / "config.json").write_text(json.dumps({
         "ip": "203.0.113.7", "port": 9999, "version": "0.10.0",
     }), encoding="utf-8")
