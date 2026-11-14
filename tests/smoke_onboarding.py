@@ -172,8 +172,17 @@ def check_pattern_response(c: int, b: dict, want_role: str, label_check="") -> s
     ch("expires قالب UTC-Z دارد (الگوی مالک)", bool(Z_RE.match(str(b.get("expires", "")))))
     ch("auth_note: فراخوانی بعدی فقط با همین توکن",
        "فقط با این توکن" in str(b.get("auth_note", "")))
-    ch("storage_hint: پیشنهاد فایل موقت و ایمن",
-       "فایل موقت و ایمن" in str(b.get("storage_hint", "")))
+    ch("storage_hint: فایل ایمن نزد خود عامل، gitignored، فضای کاری مانا (v0.11.1)",
+       "فایل ایمن نزد" in str(b.get("storage_hint", ""))
+       and "gitignored" in str(b.get("storage_hint", ""))
+       and "فضای کاری مانای" in str(b.get("storage_hint", "")))
+    ch("storage_hint: /tmp و فقط حافظهٔ گفتگو را رد می‌کند و «توکن موقت است» را می‌گوید",
+       "/tmp" in str(b.get("storage_hint", ""))
+       and "حافظهٔ گفتگو" in str(b.get("storage_hint", ""))
+       and "توکن موقت است" in str(b.get("storage_hint", "")))
+    ch("storage_hint: پاک‌کردن فایل در پایان مکالمه را می‌گوید (توکن موقت، فایل نشست‌محور)",
+       "پایان مکالمه" in str(b.get("storage_hint", ""))
+       and "پاک کنید" in str(b.get("storage_hint", "")))
     ch("docs: لینک مستندات فنی", str(b.get("docs", "")).endswith("/api/docs"))
     ch("scope: قلمرو نقش در پاسخ است", isinstance(b.get("scope"), list) and len(b["scope"]) >= 3)
     ch("پاسخ هش گواهی عمومی دارد", bool(b.get("cert_sha256")))
@@ -235,6 +244,19 @@ def main() -> int:
        all(isinstance(b.get("roles", {}).get(r, {}).get("next_reading"), list)
            and b["roles"][r]["next_reading"]
            for r in ("owner", "user", "agent")))
+    # ---------- مانایی نشست عامل (v0.11.1 — درس میدان ۲۰۲۶-۱۱-۱۴ + شفاف‌سازی مالک) ----------
+    flow5 = str((b.get("onboarding", {}).get("flow") or [""] * 5)[4])
+    ch("docs: گام ۵ اتصال ذخیرهٔ توکن در فایل ایمن نزد خود عامل را صریح می‌گوید (v0.11.1)",
+       "فایل ایمن نزد خودت" in flow5 and "gitignored" in flow5
+       and "/tmp" in flow5 and "حافظهٔ گفتگو" in flow5)
+    ch("docs: گام ۵ می‌گوید توکن موقت است و فایل در پایان مکالمه پاک می‌شود",
+       "توکن موقت است" in flow5 and "فایل را پاک کن" in flow5)
+    auth_note = str(b.get("auth", {}).get("note", ""))
+    ch("docs: یادداشت auth مانایی ذخیره را می‌گوید — بازیافت بافت اتصال را نمی‌کشد",
+       "نزد خودت" in auth_note
+       and "بازیافت بافت مکالمه" in auth_note)
+    ch("docs: هیچ جا «فایل موقت» برای توکن نشست نمی‌گوید (واژهٔ ممنوعهٔ درس میدان)",
+       "فایل موقت" not in json.dumps(b, ensure_ascii=False))
     c, b = req("POST", "/api/docs", body={})
     ch("POST /api/docs → 405", c == 405)
 
